@@ -1,7 +1,6 @@
 # Robot Welding 6-Axis — Driver Setup & Usage Guide
 
-This guide explains how to connect the EziMotion driver to WSL, configure the environment, and compile example programs included in this project.
-
+This guide explains how to connect the EziMotion driver to WSL, configure the environment, and compile example programs included in this project. 
 ---
 
 ## 🧩 1. Connect the Driver to WSL
@@ -55,4 +54,5 @@ You can compile and execute example files or create new ones using the provided 
    ./test
    ```
    Replace `test` with your executable name if different.
-   ⚠️ **Note**: Only use amd64 in WSL. 
+
+⚠️ **Note**: ONLY USE `amd64 folder` IN WSL.

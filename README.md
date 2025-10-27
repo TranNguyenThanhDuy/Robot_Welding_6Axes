@@ -55,3 +55,4 @@ You can compile and execute example files or create new ones using the provided 
    ./test
    ```
    Replace `test` with your executable name if different.
+   ⚠️ **Note**: Only use amd64 in WSL. 

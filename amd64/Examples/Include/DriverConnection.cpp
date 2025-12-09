@@ -51,11 +51,11 @@ void Driver_Connection(const wchar_t* sPort, unsigned int dwBaudRate, int nPortI
     }
 
     // Check Drive information
-    if (CheckDriveInfo(sPort, nPortID, iSlaveNo) == false)
-    {
-        getchar();
-        exit(1);
-    }
+    // if (CheckDriveInfo(sPort, nPortID, iSlaveNo) == false)
+    // {
+    //     getchar();
+    //     exit(1);
+    // }
 
     // Keep connection open; caller is responsible for FAS_Close(nPortID)
 }

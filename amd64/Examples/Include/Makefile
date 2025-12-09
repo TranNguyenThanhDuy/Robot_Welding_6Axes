@@ -2,11 +2,12 @@
 CXX      := g++
 TARGET   := test
 
-SRC      := tc.cpp DriverConnection.cpp
+SRC      := tc_6axis.cpp DriverConnection.cpp
 OBJ      := $(SRC:.cpp=.o)
 
 # Flags có thể chỉnh
-CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I.
+AXIS     ?= AXIS_2
+CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I. -D$(AXIS)
 # Thư mục chứa lib (mặc định: current dir ".")
 LIBDIR   ?= .
 LDFLAGS  ?= -L$(LIBDIR) -Wl,-rpath,'$$ORIGIN'

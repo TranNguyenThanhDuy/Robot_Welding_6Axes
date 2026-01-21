@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html  dir="ltr">
+
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title></title>
+        <link rel="shortcut icon" href="images/favicon.ico" type="image/x-icon">
+        <link rel="apple-touch-icon-precomposed" href="images/apple-touch-icon.png">
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/uikit/2.26.4/css/uikit.gradient.css">
+
+        <link rel="stylesheet" href="style.css">
+        <link href="https://vjs.zencdn.net/5.4.4/video-js.css" rel="stylesheet" />
+        <script src="https://code.jquery.com/jquery-2.2.1.min.js"></script>
+        <script src="uikit.js"></script>
+        <script src="scripts.js"></script>
+        <script src="jquery.sticky-kit.js"></script>
+
+        <meta name="generator" content="pandoc-uikit" />
+                        <title>doc</title>
+        <style type="text/css">code{white-space: pre;}</style>
+                        <style type="text/css">
+            pre > code.sourceCode { white-space: pre; position: relative; }
+            pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+            pre > code.sourceCode > span:empty { height: 1.2em; }
+            code.sourceCode > span { color: inherit; text-decoration: inherit; }
+            div.sourceCode { margin: 1em 0; }
+            pre.sourceCode { margin: 0; }
+            @media screen {
+            div.sourceCode { overflow: auto; }
+            }
+            @media print {
+            pre > code.sourceCode { white-space: pre-wrap; }
+            pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+            }
+            pre.numberSource code
+              { counter-reset: source-line 0; }
+            pre.numberSource code > span
+              { position: relative; left: -4em; counter-increment: source-line; }
+            pre.numberSource code > span > a:first-child::before
+              { content: counter(source-line);
+                position: relative; left: -1em; text-align: right; vertical-align: baseline;
+                border: none; display: inline-block;
+                -webkit-touch-callout: none; -webkit-user-select: none;
+                -khtml-user-select: none; -moz-user-select: none;
+                -ms-user-select: none; user-select: none;
+                padding: 0 4px; width: 4em;
+                color: #aaaaaa;
+              }
+            pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+            div.sourceCode
+              {   }
+            @media screen {
+            pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+            }
+            code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+            code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+            code span.at { color: #7d9029; } /* Attribute */
+            code span.bn { color: #40a070; } /* BaseN */
+            code span.bu { } /* BuiltIn */
+            code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+            code span.ch { color: #4070a0; } /* Char */
+            code span.cn { color: #880000; } /* Constant */
+            code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+            code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+            code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+            code span.dt { color: #902000; } /* DataType */
+            code span.dv { color: #40a070; } /* DecVal */
+            code span.er { color: #ff0000; font-weight: bold; } /* Error */
+            code span.ex { } /* Extension */
+            code span.fl { color: #40a070; } /* Float */
+            code span.fu { color: #06287e; } /* Function */
+            code span.im { } /* Import */
+            code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+            code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+            code span.op { color: #666666; } /* Operator */
+            code span.ot { color: #007020; } /* Other */
+            code span.pp { color: #bc7a00; } /* Preprocessor */
+            code span.sc { color: #4070a0; } /* SpecialChar */
+            code span.ss { color: #bb6688; } /* SpecialString */
+            code span.st { color: #4070a0; } /* String */
+            code span.va { color: #19177c; } /* Variable */
+            code span.vs { color: #4070a0; } /* VerbatimString */
+            code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+        </style>
+                                               
+    </head>
+
+    <body>
+
+
+        <div class="uk-container uk-container-center uk-margin-top uk-margin-large-bottom">
+
+            
+            <div class="uk-grid" data-uk-grid-margin >          
+                <div class="uk-width-medium-1-4">
+                    <div class="uk-overflow-container" data-uk-sticky="{top:25,media: 768}">
+                        <div class="uk-panel uk-panel-box menu-begin" >
+
+                            
+                        </div>
+                    </div>
+                </div>
+
+                <div class="uk-width-medium-3-4">
+<h1 id="iolevelexam">IOLevelExam</h1>
+<h2 id="notification-before-use">Notification before use</h2>
+<p>Depending on the type of product you are using, the definitions of ‘Parameter’, ‘IO Logic’, ‘AxisStatus’, etc. may be different. This example is based on ‘Ezi-SERVO’, so please apply the appropriate value depending on the product you are using.</p>
+<pre><code>Example)
+
+FM_EZISERVO_PARAM           // Parameter enum when using &#39;Ezi-SERVO&#39;    
+FM_EZIMOTIONLINK_PARAM      // Parameter enum when using &#39;Ezi-MOTIONLINK&#39;</code></pre>
+<h2 id="program-scenario">0. Program scenario</h2>
+<p>[EN]<br />
+1. Connect a device. 2. Check IO Level information. 3. Configure IO Level. 4. Close connection.</p>
+<p>[KR]<br />
+1. 장치 연결. 2. IO Level 정보 읽기. 3. IO Level 설정. 4. 연결 해제.</p>
+<h2 id="get-io-level">1. Get IO level</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode cpp"><code class="sourceCode cpp"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true"></a><span class="dt">bool</span> GetIOLevel(<span class="dt">int</span> nPortID, <span class="dt">unsigned</span> <span class="dt">char</span> iSlaveNo)</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true"></a>{</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true"></a>    <span class="dt">unsigned</span> <span class="dt">int</span> uIOLevel = <span class="dv">0</span>;</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true"></a>    <span class="dt">bool</span> bLevel;</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true"></a></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true"></a>    printf(<span class="st">&quot;---------------------------------- </span><span class="sc">\n</span><span class="st">&quot;</span>);</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true"></a>    <span class="co">// [Before] Check IO Level Status</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true"></a>    <span class="cf">if</span> (FAS_GetIOLevel(nPortID, iSlaveNo, &amp;uIOLevel) != FMM_OK)</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true"></a>    {</span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true"></a>        printf(<span class="st">&quot;Function(FAS_GetIOLevel) was failed.</span><span class="sc">\n</span><span class="st">&quot;</span>);</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true"></a>        <span class="cf">return</span> <span class="kw">false</span>;</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true"></a>    }</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true"></a>    printf(<span class="st">&quot;Load IO Level Status : 0x</span><span class="sc">%08x</span><span class="st"> </span><span class="sc">\n</span><span class="st">&quot;</span>, uIOLevel);</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true"></a></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true"></a>    <span class="cf">for</span> (<span class="dt">int</span> i = <span class="dv">0</span>; i &lt; <span class="dv">16</span>; i++)</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true"></a>    {</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true"></a>        bLevel = ((uIOLevel &amp; (<span class="bn">0x01</span> &lt;&lt; i)) != <span class="dv">0</span>);</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true"></a>        printf(<span class="st">&quot;I/O pin </span><span class="sc">%d</span><span class="st"> : </span><span class="sc">%s\n</span><span class="st">&quot;</span>, i, (bLevel) ? <span class="st">&quot;High Active&quot;</span> : <span class="st">&quot;Low Active&quot;</span>);</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true"></a>    }</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true"></a></span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true"></a>    <span class="cf">return</span> <span class="kw">true</span>;</span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true"></a>}</span></code></pre></div>
+<p>[EN]<br />
+With FAS_GetIOLevel() function, you can read the level information for each IO Pin. IO level information is written sequentially from LSB to MSB of uIOLevel. For example, IO level information of pin 0 is written in the LSB, and IO level information of pin 31 is written in the MSB. 0: Low Active Level / 1: High Active Level</p>
+<p>[KR]<br />
+FAS_GetIOLevel() 함수를 사용하여 각 IO Pin에 대해 설정된 Level을 읽을 수 있습니다. uIOLevel의 LSB에 0번 Pin의 Level부터 MSB에 31번 31번 Pin의 Level이 순차적으로 쓰여집니다. 0: Low Active Level / 1: High Active Level을 의미합니다.</p>
+<h3 id="bitmask-logic-of-fastech-io-product">1.1 Bitmask logic of Fastech IO product</h3>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+<col style="width: 7%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th></th>
+<th>0x0001</th>
+<th>0x0002</th>
+<th>0x0004</th>
+<th>0x0008</th>
+<th>0x0010</th>
+<th>0x0020</th>
+<th>0x0040</th>
+<th>0x0080</th>
+<th>0x0100</th>
+<th>0x0200</th>
+<th>0x0400</th>
+<th>0x0800</th>
+<th>…</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Ezi-IO-I16</td>
+<td>IN0</td>
+<td>IN1</td>
+<td>IN2</td>
+<td>IN3</td>
+<td>IN4</td>
+<td>IN5</td>
+<td>IN6</td>
+<td>IN7</td>
+<td>IN8</td>
+<td>IN9</td>
+<td>IN10</td>
+<td>IN11</td>
+<td>…</td>
+</tr>
+<tr class="even">
+<td>Ezi-IO-O16</td>
+<td>OUT0</td>
+<td>OUT1</td>
+<td>OUT2</td>
+<td>OUT3</td>
+<td>OUT4</td>
+<td>OUT5</td>
+<td>OUT6</td>
+<td>OUT7</td>
+<td>OUT8</td>
+<td>OUT9</td>
+<td>OUT10</td>
+<td>OUT11</td>
+<td>…</td>
+</tr>
+<tr class="odd">
+<td>Ezi-IO-I8O8</td>
+<td>IN0</td>
+<td>IN1</td>
+<td>IN2</td>
+<td>IN3</td>
+<td>IN4</td>
+<td>IN5</td>
+<td>IN6</td>
+<td>IN7</td>
+<td>OUT0</td>
+<td>OUT1</td>
+<td>OUT2</td>
+<td>OUT3</td>
+<td>…</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr class="header">
+<th></th>
+<th>0x0001</th>
+<th>0x0002</th>
+<th>0x0004</th>
+<th>0x0008</th>
+<th>…</th>
+<th>0x10000</th>
+<th>0x20000</th>
+<th>0x40000</th>
+<th>0x80000</th>
+<th>…</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Ezi-IO-I32</td>
+<td>IN0</td>
+<td>IN1</td>
+<td>IN2</td>
+<td>IN3</td>
+<td>…</td>
+<td>IN16</td>
+<td>IN17</td>
+<td>IN18</td>
+<td>…</td>
+<td></td>
+</tr>
+<tr class="even">
+<td>Ezi-IO-O32</td>
+<td>OUT0</td>
+<td>OUT1</td>
+<td>OUT2</td>
+<td>OUT3</td>
+<td>…</td>
+<td>OUT16</td>
+<td>OUT17</td>
+<td>OUT18</td>
+<td>…</td>
+<td></td>
+</tr>
+<tr class="odd">
+<td>Ezi-IO-I16O16</td>
+<td>IN0</td>
+<td>IN1</td>
+<td>IN2</td>
+<td>IN3</td>
+<td>…</td>
+<td>OUT0</td>
+<td>OUT1</td>
+<td>OUT2</td>
+<td>…</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="set-io-level">2. Set IO level</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode cpp"><code class="sourceCode cpp"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true"></a><span class="dt">bool</span> SetIOLevel(<span class="dt">int</span> nPortID, <span class="dt">unsigned</span> <span class="dt">char</span> iSlaveNo)</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true"></a>{</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true"></a>    <span class="co">/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true"></a><span class="co">    ~~ Fastech&#39;s product which has Input (or Output) only (Ezi-IO-I16, Ezi-IO-O16, Ezi-IO-I32, Ezi-IO-O32...), BitMask of Input (or Output) starts from 0x01,   ~~</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true"></a><span class="co">    ~~ However, for Input+Output mixed products (Ezi-IO-I8O8, Ezi-IO-I16O16, etc.), the BitMask of Output is allocated after the BitMasks of Input.             ~~</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true"></a><span class="co">    ~~ Ezi-IO-I8O8, for example, the BitMask of Input 0 is 0x0001, and the BitMask of Output 0 is 0x0100.                                                       ~~</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true"></a><span class="co">    ~~ For detailed allocation methods, please refer to Section 1.3 of the &quot;doc.md&quot; file of this example.                                                       ~~</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true"></a><span class="co">    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true"></a><span class="co">    ~~ Fastech의 Input/Output 단일 제품 (Ezi-IO-I16, Ezi-IO-O16, Ezi-IO-I32, Ezi-IO-O32 등)은 Input과 Output의 BitMask가 각각 0x01부터 시작하지만,                 ~~</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true"></a><span class="co">    ~~ Input+Output 혼합 제품 (Ezi-IO-I8O8, Ezi-IO-I16O16 등)은 Input의 BitMask를 전부 할당한 뒤, Output의 BitMask가 이어서 할당되어있습니다.                      ~~</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true"></a><span class="co">    ~~ 예를들어 Ezi-IO-I8O8의 Input 0번의 BitMask는 0x0001, Output 0번의 BitMask는 0x0100입니다.                                                                  ~~</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true"></a><span class="co">    ~~ 자세한 할당 방식은 본 예제의 &quot;doc.md&quot;파일 1.3절을 참고 부탁드립니다.                                                                                         ~~</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true"></a><span class="co">    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true"></a></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true"></a>    <span class="dt">unsigned</span> <span class="dt">int</span> uIOLevel = <span class="bn">0x0000ff00</span>;</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true"></a></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true"></a>    printf(<span class="st">&quot;---------------------------------- </span><span class="sc">\n</span><span class="st">&quot;</span>);</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true"></a>    <span class="co">// Set IO Level Status</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true"></a>    <span class="cf">if</span> (FAS_SetIOLevel(nPortID, iSlaveNo, uIOLevel) != FMM_OK)</span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true"></a>    {</span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true"></a>        printf(<span class="st">&quot;Function(FAS_SetIOLevel) was failed.</span><span class="sc">\n</span><span class="st">&quot;</span>);</span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true"></a>    }</span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true"></a>    <span class="cf">else</span></span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true"></a>    {</span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true"></a>        printf(<span class="st">&quot;Set IO Level Status : 0x</span><span class="sc">%08x</span><span class="st"> </span><span class="sc">\n</span><span class="st">&quot;</span>, uIOLevel);</span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true"></a>    }</span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true"></a></span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true"></a>    <span class="cf">return</span> <span class="kw">true</span>;</span>
+<span id="cb3-29"><a href="#cb3-29" aria-hidden="true"></a>}</span></code></pre></div>
+<p>[EN]<br />
+You can set the level for each IO Pin using the FAS_SetIOLevel() function. IO level information is written sequentially from LSB to MSB of uIOLevel. For example, IO level information of pin 0 is written in the LSB, and IO level information of pin 31 is written in the MSB. 0: Low Active Level / 1: High Active Level. The source code above sets Pins 0 to 7 to Low Active Level and Pins 8 to 15 to High Active Level. (16 Pins)</p>
+<p>[KR]<br />
+FAS_SetIOLevel() 함수를 사용하여 각 IO Pin에 대해 Level을 설정할 수 있습니다. uIOLevel의 LSB에 0번 Pin의 Level부터 MSB에 31번 31번 Pin의 Level을 순차적으로 입력합니다. 0: Low Active Level / 1: High Active Level을 의미합니다. 위 소스 코드는 0~7번 Pin을 Low Active Level로, 8~15번 Pin을 High Active Level로 설정합니다. (16 Pin)</p>
+<h2 id="etc">3. Etc</h2>
+<p>[EN]<br />
+1. Please refer to the [01.ConnectionExam] project document for function descriptions on connecting and disconnecting devices.</p>
+<p>[KR]<br />
+1. 장치 연결 및 해제에 대한 함수 설명은 [01.ConnectionExam] 프로젝트 문서를 참고하시기 바랍니다.</p>                    
+                </div>
+            </div>
+
+            <script src="https://vjs.zencdn.net/5.4.4/video.js"></script>
+        </div>
+    </body>
+</html>

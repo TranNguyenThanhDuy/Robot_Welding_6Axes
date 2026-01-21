@@ -130,6 +130,7 @@ void handleMovePos();
 void handleGoPos();
 void handlePosTable();
 void handlePrintTable();
+void handleSetoriginPos();
 void recordingThread();
 void cleanup();
 
@@ -171,9 +172,12 @@ int main() {
             handlePosTable();
         } else if (cmd == "print table" || cmd == "printtable") {
             handlePrintTable();
+        } else if (cmd == "setpos" || cmd == "set pos") {
+            handleSetoriginPos();
         } else {
             std::cout << "Unknown command. Use 'on', 'off', 'home', 'record', 'stop', 'clear', "
-                         "'getpos', 'go', 'movepos', 'go pos', 'postable', 'print table', or 'q'."
+                         "'getpos', 'go', 'movepos', 'go pos', 'postable', 'print table', "
+                         "'setpos', or 'q'."
                       << std::endl;
         }
     }
@@ -205,6 +209,7 @@ void showCommands() {
     std::cout << "go pos: Run items saved in position table (Only works in servo on)" << std::endl;
     std::cout << "postable: Save record to position table" << std::endl;
     std::cout << "print table: Print position table" << std::endl;
+    std::cout << "setpos: Set all axes positions to 0" << std::endl;
     std::cout << "q: Quit" << std::endl;
 }
 
@@ -720,6 +725,37 @@ void handlePrintTable() {
         if (shown == 0) {
             std::cout << "No non-empty items found for " << axisName(axis) << "." << std::endl;
         }
+    }
+}
+
+void handleSetoriginPos() {
+    AxisStatuses statuses{};
+    if (!readAxisStatuses(statuses)) {
+        printf("Function(FAS_GetAxisStatus) failed.\n");
+        return;
+    }
+
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        if (statuses[i].FFLAG_MOTIONING) {
+            std::cout << axisName(i) << " is moving. Stop motion before setpos." << std::endl;
+            return;
+        }
+    }
+
+    bool allOk = true;
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        if (FAS_SetCommandPos(nPortIDs[i], iSlaveNos[i], 0) != FMM_OK) {
+            printf("%s set command position failed.\n", axisName(i).c_str());
+            allOk = false;
+        }
+        if (FAS_SetActualPos(nPortIDs[i], iSlaveNos[i], 0) != FMM_OK) {
+            printf("%s set actual position failed.\n", axisName(i).c_str());
+            allOk = false;
+        }
+    }
+
+    if (allOk) {
+        std::cout << "All axes positions set to 0." << std::endl;
     }
 }
 

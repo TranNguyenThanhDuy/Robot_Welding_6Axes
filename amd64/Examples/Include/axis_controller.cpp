@@ -1,89 +1,55 @@
-#include "DriverConnection.h"
+#include "axis_controller.h"
 #include <algorithm>
-#include <array>
-#include <atomic>
 #include <chrono>
-#include <cctype>
 #include <cmath>
 #include <iostream>
-#include <limits>
-#include <mutex>
 #include <string>
-#include <thread>
-#include <vector>
 
-// ------------------------------------------------------------
-// Axis selection
-// Define exactly one of AXIS_1, AXIS_2, AXIS_5, AXIS_6
-#if defined(AXIS_1)
-constexpr size_t AXIS_COUNT = 1;
-#elif defined(AXIS_2)
-constexpr size_t AXIS_COUNT = 2;
-#elif defined(AXIS_5)
-constexpr size_t AXIS_COUNT = 5;
-#elif defined(AXIS_6)
-constexpr size_t AXIS_COUNT = 6;
-#else
-#error "Define one of AXIS_1, AXIS_2, AXIS_5, AXIS_6 before building."
-#endif
-// ------------------------------------------------------------
+AxisController::AxisController() {
+    int portDefaults[6] = {0, 1, 2, 3, 4, 5};
+    unsigned char slaveDefaults[6] = {0, 1, 2, 3, 4, 5};
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        nPortIDs_[i] = portDefaults[i];
+        iSlaveNos_[i] = slaveDefaults[i];
+    }
+}
 
-constexpr unsigned int base_velocity = 5000;
-constexpr unsigned int min_velocity = 100; 
+AxisController::~AxisController() {
+    stopRecordingThread();
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        FAS_Close(nPortIDs_[i]);
+    }
+}
 
-using AxisPorts = std::array<int, AXIS_COUNT>;
-using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
-using AxisPositions = std::array<int, AXIS_COUNT>;
-using AxisStatuses = std::array<EZISERVO_AXISSTATUS, AXIS_COUNT>;
-using AxisVelocities = std::array<unsigned int, AXIS_COUNT>;
-using AxisVectors = std::array<std::vector<int>, AXIS_COUNT>;
-using AxisBools = std::array<bool, AXIS_COUNT>;
-
-
-AxisPorts nPortIDs = []() {
-    AxisPorts ports{};
-    int defaults[6] = {0, 0, 0, 0, 0, 0};
-    for (size_t i = 0; i < AXIS_COUNT; ++i) ports[i] = defaults[i];
-    return ports;
-}();
-
-AxisSlaves iSlaveNos = []() {
-    AxisSlaves slaves{};
-    unsigned char defaults[6] = {0, 1, 2, 3, 4, 5};
-    for (size_t i = 0; i < AXIS_COUNT; ++i) slaves[i] = defaults[i];
-    return slaves;
-}();
-
-AxisVectors recorded_positions;
-std::mutex rec_mtx;
-std::atomic<bool> recording{false};
-std::thread rec_thread;
-
-std::string axisName(size_t idx) {
+std::string AxisController::axisName(size_t idx) const {
     return "Motor " + std::to_string(idx + 1);
 }
 
-bool readAxisStatuses(AxisStatuses& statuses) {
+bool AxisController::isRecording() const {
+    return recording_.load();
+}
+
+bool AxisController::readAxisStatuses(AxisStatuses& statuses) {
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (FAS_GetAxisStatus(nPortIDs[i], iSlaveNos[i], &(statuses[i].dwValue)) != FMM_OK) {
+        if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) != FMM_OK) {
             return false;
         }
     }
     return true;
 }
 
-bool readActualPositions(AxisPositions& positions) {
+bool AxisController::readActualPositions(AxisPositions& positions) {
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (FAS_GetActualPos(nPortIDs[i], iSlaveNos[i], &positions[i]) != FMM_OK) {
+        if (FAS_GetActualPos(nPortIDs_[i], iSlaveNos_[i], &positions[i]) != FMM_OK) {
             return false;
         }
     }
     return true;
 }
 
-AxisVelocities computeVelocities(const AxisPositions& current,
-                                 const AxisPositions& targets,
-                                 const AxisBools& hasCommand) {
+AxisVelocities AxisController::computeVelocities(const AxisPositions& current,
+                                                 const AxisPositions& targets,
+                                                 const AxisBools& hasCommand) const {
     AxisVelocities velocities{};
     velocities.fill(base_velocity);
 
@@ -109,146 +75,67 @@ AxisVelocities computeVelocities(const AxisPositions& current,
     return velocities;
 }
 
-bool allServoOn(const AxisStatuses& statuses) {
+bool AxisController::allServoOn(const AxisStatuses& statuses) const {
     for (const auto& st : statuses) {
         if (!st.FFLAG_SERVOON) return false;
     }
     return true;
 }
 
-void initializeSystem();
-void showCommands();
-bool handleServoOn();
-bool handleServoOff();
-bool handleHome();
-void handleRecord();
-void handleStop();
-void handleClear();
-void handleGetPos();
-void handleGo();
-void handleMovePos();
-void handleGoPos();
-void handlePosTable();
-void handlePrintTable();
-void handleSetoriginPos();
-void recordingThread();
-void cleanup();
-
-int main() {
-    initializeSystem();
-    showCommands();
-
-    std::string line;
-    while (true) {
-        if (!std::getline(std::cin, line)) break;
-        std::string cmd = line;
-        std::transform(cmd.begin(), cmd.end(), cmd.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-
-        if (cmd == "q") break;
-        if (cmd.empty()) continue;
-
-        if (cmd == "on") {
-            handleServoOn();
-        } else if (cmd == "off") {
-            handleServoOff();
-        } else if (cmd == "home") {
-            handleHome();
-        } else if (cmd == "record") {
-            handleRecord();
-        } else if (cmd == "stop") {
-            handleStop();
-        } else if (cmd == "clear") {
-            handleClear();
-        } else if (cmd == "getpos") {
-            handleGetPos();
-        } else if (cmd == "go") {
-            handleGo();
-        } else if (cmd == "movepos" || cmd == "move pos") {
-            handleMovePos();
-        } else if (cmd == "go pos" || cmd == "gopos") {
-            handleGoPos();
-        } else if (cmd == "postable") {
-            handlePosTable();
-        } else if (cmd == "print table" || cmd == "printtable") {
-            handlePrintTable();
-        } else if (cmd == "setpos" || cmd == "set pos") {
-            handleSetoriginPos();
-        } else {
-            std::cout << "Unknown command. Use 'on', 'off', 'home', 'record', 'stop', 'clear', "
-                         "'getpos', 'go', 'movepos', 'go pos', 'postable', 'print table', "
-                         "'setpos', or 'q'."
-                      << std::endl;
-        }
-    }
-
-    cleanup();
-    return 0;
-}
-
-void initializeSystem() {
+void AxisController::initializeSystem() {
     const wchar_t* sPort = L"ttyUSB0";
     unsigned int dwBaudRate = 115200;
 
+    bool allOk = true;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        Driver_Connection(sPort, dwBaudRate, nPortIDs[i], iSlaveNos[i]);
+        if (!Driver_Connection(sPort, dwBaudRate, nPortIDs_[i], iSlaveNos_[i])) {
+            allOk = false;
+            std::cout << axisName(i) << " connection failed." << std::endl;
+        }
+    }
+
+    if (!allOk) {
+        std::cout << "One or more connections failed. GUI will still open."
+                  << std::endl;
     }
 }
 
-void showCommands() {
-    std::cout << "=== " << AXIS_COUNT << "-AXIS SERVO CONTROL ===" << std::endl;
-    std::cout << "on: Servo on (" << AXIS_COUNT << " motors)" << std::endl;
-    std::cout << "off: Servo off (" << AXIS_COUNT << " motors)" << std::endl;
-    std::cout << "home: Homing all motors (Only works in servo on)" << std::endl;
-    std::cout << "record: Start recording all motors (Only works in servo off)" << std::endl;
-    std::cout << "stop: Stop recording" << std::endl;
-    std::cout << "clear: Clear buffer" << std::endl;
-    std::cout << "getpos: Print current positions of all motors" << std::endl;
-    std::cout << "go: Go with positions in buffer (Only works in servo on)" << std::endl;
-    std::cout << "movepos: Move motors to specified positions (Only works in servo on)" << std::endl;
-    std::cout << "go pos: Run items saved in position table (Only works in servo on)" << std::endl;
-    std::cout << "postable: Save record to position table" << std::endl;
-    std::cout << "print table: Print position table" << std::endl;
-    std::cout << "setpos: Set all axes positions to 0" << std::endl;
-    std::cout << "q: Quit" << std::endl;
-}
-
-bool handleServoOn() {
+bool AxisController::servoOn() {
     bool allOk = true;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        bool ok = ServoOn(nPortIDs[i], iSlaveNos[i]);
+        bool ok = ServoOn(nPortIDs_[i], iSlaveNos_[i]);
         if (!ok) {
             allOk = false;
-            printf("%s servo ON failed.\n", axisName(i).c_str());
+            std::cout << axisName(i) << " servo ON failed." << std::endl;
         }
     }
 
     if (allOk) {
-        printf("All %zu servos ON successfully.\n", AXIS_COUNT);
+        std::cout << "All " << AXIS_COUNT << " servos ON successfully." << std::endl;
     }
     return allOk;
 }
 
-bool handleServoOff() {
+bool AxisController::servoOff() {
     bool allOk = true;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        bool ok = ServoOff(nPortIDs[i], iSlaveNos[i]);
+        bool ok = ServoOff(nPortIDs_[i], iSlaveNos_[i]);
         if (!ok) {
             allOk = false;
-            printf("%s servo OFF failed.\n", axisName(i).c_str());
+            std::cout << axisName(i) << " servo OFF failed." << std::endl;
         }
     }
 
     if (allOk) {
-        printf("All %zu servos OFF successfully.\n", AXIS_COUNT);
+        std::cout << "All " << AXIS_COUNT << " servos OFF successfully." << std::endl;
     }
     return allOk;
 }
 
-bool handleHome() {
+bool AxisController::home() {
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses)) {
-        printf("Function(FAS_GetAxisStatus) failed.\n");
+        std::cout << "Function(FAS_GetAxisStatus) failed." << std::endl;
         return false;
     }
 
@@ -259,8 +146,8 @@ bool handleHome() {
 
     std::cout << "Sending homing commands to all motors..." << std::endl;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (FAS_MoveSingleAxisAbsPos(nPortIDs[i], iSlaveNos[i], 0, base_velocity) != FMM_OK) {
-            printf("%s homing command failed.\n", axisName(i).c_str());
+        if (FAS_MoveSingleAxisAbsPos(nPortIDs_[i], iSlaveNos_[i], 0, base_velocity) != FMM_OK) {
+            std::cout << axisName(i) << " homing command failed." << std::endl;
             return false;
         }
     }
@@ -272,10 +159,11 @@ bool handleHome() {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         for (size_t i = 0; i < AXIS_COUNT; ++i) {
             if (done[i]) continue;
-            if (FAS_GetAxisStatus(nPortIDs[i], iSlaveNos[i], &(statuses[i].dwValue)) == FMM_OK) {
+            if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) ==
+                FMM_OK) {
                 done[i] = !statuses[i].FFLAG_MOTIONING;
                 if (done[i]) {
-                    printf("%s homing complete.\n", axisName(i).c_str());
+                    std::cout << axisName(i) << " homing complete." << std::endl;
                 }
             }
             allDone = allDone && done[i];
@@ -297,11 +185,11 @@ bool handleHome() {
     return true;
 }
 
-void recordingThread() {
+void AxisController::recordingThread() {
     AxisPositions lastPos{};
     AxisBools hasLast{};
 
-    while (recording.load()) {
+    while (recording_.load()) {
         AxisPositions pos{};
         if (!readActualPositions(pos)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -317,9 +205,9 @@ void recordingThread() {
         }
 
         if (changed) {
-            std::lock_guard<std::mutex> lk(rec_mtx);
+            std::lock_guard<std::mutex> lk(rec_mtx_);
             for (size_t i = 0; i < AXIS_COUNT; ++i) {
-                recorded_positions[i].push_back(pos[i]);
+                recorded_positions_[i].push_back(pos[i]);
                 lastPos[i] = pos[i];
                 hasLast[i] = true;
             }
@@ -329,85 +217,80 @@ void recordingThread() {
     }
 }
 
-void handleRecord() {
-    if (recording.load()) {
+void AxisController::record() {
+    if (recording_.load()) {
         std::cout << "Already recording." << std::endl;
         return;
     }
-    recording.store(true);
-    rec_thread = std::thread(recordingThread);
+    recording_.store(true);
+    rec_thread_ = std::thread(&AxisController::recordingThread, this);
     std::cout << "Recording started for all motors (capturing positions only). Type 'stop' to end."
               << std::endl;
 }
 
-void handleStop() {
-    if (!recording.load()) {
+void AxisController::stopRecordingThread() {
+    if (recording_.load()) {
+        recording_.store(false);
+    }
+    if (rec_thread_.joinable()) rec_thread_.join();
+}
+
+void AxisController::stop() {
+    if (!recording_.load()) {
         std::cout << "Not recording." << std::endl;
         return;
     }
-    recording.store(false);
-    if (rec_thread.joinable()) rec_thread.join();
-    std::lock_guard<std::mutex> lk(rec_mtx);
+    stopRecordingThread();
+    std::lock_guard<std::mutex> lk(rec_mtx_);
     std::cout << "Recording stopped." << std::endl;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        std::cout << axisName(i) << " samples: " << recorded_positions[i].size() << std::endl;
-        if (!recorded_positions[i].empty()) {
+        std::cout << axisName(i) << " samples: " << recorded_positions_[i].size() << std::endl;
+        if (!recorded_positions_[i].empty()) {
             std::cout << axisName(i) << " Positions: [";
-            for (size_t j = 0; j < recorded_positions[i].size(); ++j) {
-                std::cout << recorded_positions[i][j];
-                if (j + 1 < recorded_positions[i].size()) std::cout << ", ";
+            for (size_t j = 0; j < recorded_positions_[i].size(); ++j) {
+                std::cout << recorded_positions_[i][j];
+                if (j + 1 < recorded_positions_[i].size()) std::cout << ", ";
             }
             std::cout << "]" << std::endl;
         }
     }
 }
 
-void handleClear() {
-    std::lock_guard<std::mutex> lk(rec_mtx);
-    for (auto& path : recorded_positions) {
+void AxisController::clear() {
+    std::lock_guard<std::mutex> lk(rec_mtx_);
+    for (auto& path : recorded_positions_) {
         path.clear();
     }
     std::cout << "Cleared recorded positions for all motors." << std::endl;
 }
 
-void handleGetPos() {
-    AxisPositions pos{};
-    if (!readActualPositions(pos)) {
-        std::cout << "Failed to read current positions." << std::endl;
-        return;
-    }
-
-    std::cout << "Current positions - ";
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        std::cout << axisName(i) << ": " << pos[i];
-        if (i + 1 < AXIS_COUNT) std::cout << ", ";
-    }
-    std::cout << std::endl;
+bool AxisController::getPos(AxisPositions& pos) {
+    return readActualPositions(pos);
 }
 
-void handleGo() {
+bool AxisController::go() {
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses)) {
-        printf("Function(FAS_GetAxisStatus) failed.\n");
-        return;
+        std::cout << "Function(FAS_GetAxisStatus) failed." << std::endl;
+        return false;
     }
 
     if (!allServoOn(statuses)) {
         std::cout << "Some servos are OFF. Turn them ON before moving." << std::endl;
-        return;
+        return false;
     }
 
     AxisVectors paths;
     {
-        std::lock_guard<std::mutex> lk(rec_mtx);
-        paths = recorded_positions;
+        std::lock_guard<std::mutex> lk(rec_mtx_);
+        paths = recorded_positions_;
     }
 
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         if (paths[i].empty()) {
             std::cout << axisName(i) << " has no recorded positions. Use 'record' first."
                       << std::endl;
-            return;
+            return false;
         }
     }
 
@@ -433,10 +316,10 @@ void handleGo() {
 
         for (size_t i = 0; i < AXIS_COUNT; ++i) {
             if (!hasCommand[i]) continue;
-            if (FAS_MoveSingleAxisAbsPos(nPortIDs[i], iSlaveNos[i], targets[i],
+            if (FAS_MoveSingleAxisAbsPos(nPortIDs_[i], iSlaveNos_[i], targets[i],
                                          velocities[i]) != FMM_OK) {
-                printf("%s move to %d failed.\n", axisName(i).c_str(), targets[i]);
-                return;
+                std::cout << axisName(i) << " move to " << targets[i] << " failed." << std::endl;
+                return false;
             }
         }
 
@@ -446,7 +329,8 @@ void handleGo() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             for (size_t i = 0; i < AXIS_COUNT; ++i) {
                 if (!hasCommand[i] || done[i]) continue;
-                if (FAS_GetAxisStatus(nPortIDs[i], iSlaveNos[i], &(statuses[i].dwValue)) == FMM_OK) {
+                if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) ==
+                    FMM_OK) {
                     done[i] = !statuses[i].FFLAG_MOTIONING;
                 }
                 allDone = allDone && (done[i] || !hasCommand[i]);
@@ -466,36 +350,25 @@ void handleGo() {
     } else {
         std::cout << "Go complete." << std::endl;
     }
+    return true;
 }
 
-void handleMovePos() {
+bool AxisController::movePos(const AxisPositions& targets) {
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses)) {
-        printf("Function(FAS_GetAxisStatus) failed.\n");
-        return;
+        std::cout << "Function(FAS_GetAxisStatus) failed." << std::endl;
+        return false;
     }
 
     if (!allServoOn(statuses)) {
         std::cout << "Some servos are OFF. Turn them ON before moving." << std::endl;
-        return;
+        return false;
     }
-
-    AxisPositions targets{};
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        std::cout << "Enter target position for " << axisName(i) << ": ";
-        if (!(std::cin >> targets[i])) {
-            std::cout << "Invalid input for " << axisName(i) << " position." << std::endl;
-            std::cin.clear();
-            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-            return;
-        }
-    }
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
     AxisPositions current{};
     if (!readActualPositions(current)) {
-        printf("Failed to get current positions.\n");
-        return;
+        std::cout << "Failed to get current positions." << std::endl;
+        return false;
     }
 
     AxisBools hasCommand{};
@@ -507,10 +380,10 @@ void handleMovePos() {
 
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         if (!hasCommand[i]) continue;
-        if (FAS_MoveSingleAxisAbsPos(nPortIDs[i], iSlaveNos[i], targets[i], velocities[i]) !=
+        if (FAS_MoveSingleAxisAbsPos(nPortIDs_[i], iSlaveNos_[i], targets[i], velocities[i]) !=
             FMM_OK) {
-            printf("%s move command failed.\n", axisName(i).c_str());
-            return;
+            std::cout << axisName(i) << " move command failed." << std::endl;
+            return false;
         }
     }
 
@@ -521,10 +394,11 @@ void handleMovePos() {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         for (size_t i = 0; i < AXIS_COUNT; ++i) {
             if (!hasCommand[i] || done[i]) continue;
-            if (FAS_GetAxisStatus(nPortIDs[i], iSlaveNos[i], &(statuses[i].dwValue)) == FMM_OK) {
+            if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) ==
+                FMM_OK) {
                 done[i] = !statuses[i].FFLAG_MOTIONING;
                 if (done[i]) {
-                    printf("%s reached target position.\n", axisName(i).c_str());
+                    std::cout << axisName(i) << " reached target position." << std::endl;
                 }
             }
             allDone = allDone && (done[i] || !hasCommand[i]);
@@ -543,18 +417,19 @@ void handleMovePos() {
     } else {
         std::cout << "Movement complete." << std::endl;
     }
+    return true;
 }
 
-void handleGoPos() {
+bool AxisController::goPos() {
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses)) {
-        printf("Function(FAS_GetAxisStatus) failed.\n");
-        return;
+        std::cout << "Function(FAS_GetAxisStatus) failed." << std::endl;
+        return false;
     }
 
     if (!allServoOn(statuses)) {
         std::cout << "Some servos are OFF. Turn them ON before moving." << std::endl;
-        return;
+        return false;
     }
 
     constexpr unsigned short maxItems = 64;
@@ -563,7 +438,7 @@ void handleGoPos() {
     for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
         for (unsigned short wItemNo = 1; wItemNo <= maxItems; ++wItemNo) {
             ITEM_NODE nodeItem;
-            if (FAS_PosTableReadItem(nPortIDs[axis], iSlaveNos[axis], wItemNo, &nodeItem) !=
+            if (FAS_PosTableReadItem(nPortIDs_[axis], iSlaveNos_[axis], wItemNo, &nodeItem) !=
                 FMM_OK) {
                 break;
             }
@@ -583,7 +458,7 @@ void handleGoPos() {
     }
     if (!anyItems) {
         std::cout << "Position tables have no items to run." << std::endl;
-        return;
+        return false;
     }
 
     size_t maxSteps = 0;
@@ -608,10 +483,11 @@ void handleGoPos() {
 
         for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
             if (!hasCommand[axis]) continue;
-            if (FAS_MoveSingleAxisAbsPos(nPortIDs[axis], iSlaveNos[axis], targets[axis],
+            if (FAS_MoveSingleAxisAbsPos(nPortIDs_[axis], iSlaveNos_[axis], targets[axis],
                                          velocities[axis]) != FMM_OK) {
-                printf("%s move to %d failed.\n", axisName(axis).c_str(), targets[axis]);
-                return;
+                std::cout << axisName(axis) << " move to " << targets[axis] << " failed."
+                          << std::endl;
+                return false;
             }
         }
 
@@ -621,8 +497,8 @@ void handleGoPos() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
                 if (!hasCommand[axis] || done[axis]) continue;
-                if (FAS_GetAxisStatus(nPortIDs[axis], iSlaveNos[axis], &(statuses[axis].dwValue)) ==
-                    FMM_OK) {
+                if (FAS_GetAxisStatus(nPortIDs_[axis], iSlaveNos_[axis],
+                                      &(statuses[axis].dwValue)) == FMM_OK) {
                     done[axis] = !statuses[axis].FFLAG_MOTIONING;
                 }
                 allDone = allDone && (done[axis] || !hasCommand[axis]);
@@ -642,13 +518,14 @@ void handleGoPos() {
     } else {
         std::cout << "Go pos complete." << std::endl;
     }
+    return true;
 }
 
-void handlePosTable() {
+void AxisController::posTable() {
     AxisVectors paths;
     {
-        std::lock_guard<std::mutex> lk(rec_mtx);
-        paths = recorded_positions;
+        std::lock_guard<std::mutex> lk(rec_mtx_);
+        paths = recorded_positions_;
     }
 
     bool anyData = false;
@@ -671,10 +548,10 @@ void handlePosTable() {
         for (size_t i = 0; i < paths[axis].size(); ++i) {
             unsigned short wItemNo = static_cast<unsigned short>(startItem + i);
             ITEM_NODE nodeItem;
-            if (FAS_PosTableReadItem(nPortIDs[axis], iSlaveNos[axis], wItemNo, &nodeItem) !=
+            if (FAS_PosTableReadItem(nPortIDs_[axis], iSlaveNos_[axis], wItemNo, &nodeItem) !=
                 FMM_OK) {
-                printf("%s FAS_PosTableReadItem failed at item %u.\n", axisName(axis).c_str(),
-                       wItemNo);
+                std::cout << axisName(axis) << " FAS_PosTableReadItem failed at item " << wItemNo
+                          << "." << std::endl;
                 break;
             }
 
@@ -683,10 +560,10 @@ void handlePosTable() {
             nodeItem.wBranch = 0;
             nodeItem.wContinuous = 0;
 
-            if (FAS_PosTableWriteItem(nPortIDs[axis], iSlaveNos[axis], wItemNo, &nodeItem) !=
+            if (FAS_PosTableWriteItem(nPortIDs_[axis], iSlaveNos_[axis], wItemNo, &nodeItem) !=
                 FMM_OK) {
-                printf("%s FAS_PosTableWriteItem failed at item %u.\n", axisName(axis).c_str(),
-                       wItemNo);
+                std::cout << axisName(axis) << " FAS_PosTableWriteItem failed at item " << wItemNo
+                          << "." << std::endl;
                 break;
             }
             ++wrote[axis];
@@ -699,7 +576,7 @@ void handlePosTable() {
     }
 }
 
-void handlePrintTable() {
+void AxisController::printTable() {
     constexpr unsigned short maxItems = 64;
 
     for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
@@ -707,19 +584,21 @@ void handlePrintTable() {
         unsigned int shown = 0;
         for (unsigned short wItemNo = 1; wItemNo <= maxItems; ++wItemNo) {
             ITEM_NODE nodeItem;
-            if (FAS_PosTableReadItem(nPortIDs[axis], iSlaveNos[axis], wItemNo, &nodeItem) !=
+            if (FAS_PosTableReadItem(nPortIDs_[axis], iSlaveNos_[axis], wItemNo, &nodeItem) !=
                 FMM_OK) {
-                printf("%s FAS_PosTableReadItem failed at item %u.\n", axisName(axis).c_str(),
-                       wItemNo);
+                std::cout << axisName(axis) << " FAS_PosTableReadItem failed at item " << wItemNo
+                          << "." << std::endl;
                 break;
             }
 
             bool likelyEmpty = (nodeItem.lPosition == 0 && nodeItem.dwMoveSpd == 0);
             if (likelyEmpty) continue;
 
-            printf("%s Item %u: Pos=%d, MoveSpd=%u, Cmd=%u, Wait=%u, Cont=%u, Branch=%u\n",
-                   axisName(axis).c_str(), wItemNo, nodeItem.lPosition, nodeItem.dwMoveSpd,
-                   nodeItem.wCommand, nodeItem.wWaitTime, nodeItem.wContinuous, nodeItem.wBranch);
+            std::cout << axisName(axis) << " Item " << wItemNo << ": Pos=" << nodeItem.lPosition
+                      << ", MoveSpd=" << nodeItem.dwMoveSpd << ", Cmd=" << nodeItem.wCommand
+                      << ", Wait=" << nodeItem.wWaitTime
+                      << ", Cont=" << nodeItem.wContinuous
+                      << ", Branch=" << nodeItem.wBranch << std::endl;
             ++shown;
         }
         if (shown == 0) {
@@ -728,10 +607,10 @@ void handlePrintTable() {
     }
 }
 
-void handleSetoriginPos() {
+void AxisController::setOriginPos() {
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses)) {
-        printf("Function(FAS_GetAxisStatus) failed.\n");
+        std::cout << "Function(FAS_GetAxisStatus) failed." << std::endl;
         return;
     }
 
@@ -744,27 +623,17 @@ void handleSetoriginPos() {
 
     bool allOk = true;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (FAS_SetCommandPos(nPortIDs[i], iSlaveNos[i], 0) != FMM_OK) {
-            printf("%s set command position failed.\n", axisName(i).c_str());
+        if (FAS_SetCommandPos(nPortIDs_[i], iSlaveNos_[i], 0) != FMM_OK) {
+            std::cout << axisName(i) << " set command position failed." << std::endl;
             allOk = false;
         }
-        if (FAS_SetActualPos(nPortIDs[i], iSlaveNos[i], 0) != FMM_OK) {
-            printf("%s set actual position failed.\n", axisName(i).c_str());
+        if (FAS_SetActualPos(nPortIDs_[i], iSlaveNos_[i], 0) != FMM_OK) {
+            std::cout << axisName(i) << " set actual position failed." << std::endl;
             allOk = false;
         }
     }
 
     if (allOk) {
         std::cout << "All axes positions set to 0." << std::endl;
-    }
-}
-
-void cleanup() {
-    if (recording.load()) {
-        recording.store(false);
-        if (rec_thread.joinable()) rec_thread.join();
-    }
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        FAS_Close(nPortIDs[i]);
     }
 }

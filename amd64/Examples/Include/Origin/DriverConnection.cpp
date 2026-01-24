@@ -9,12 +9,12 @@ bool Connect(const wchar_t* sPort, unsigned int dwBaudRate, int nPortID)
 
     if (FAS_Connect(sPort, dwBaudRate, nPortID) == false)
     {
-        std::cout << "Connection Fail!" << std::endl;
+        printf("Connection Fail!\n");
         bSuccess = false;
     }
     else
     {
-        std::cout << "Connection Success!" << std::endl;
+        printf("Connection Success!\n");
         bSuccess = true;
     }
 
@@ -32,27 +32,22 @@ bool CheckDriveInfo(const wchar_t* sPort, int nPortID, unsigned char iSlaveNo)
     nRtn = FAS_GetSlaveInfo(nPortID, iSlaveNo, &byType, IpBuff, nBuffSize);
     if (nRtn != FMM_OK)
     {
-        std::cout << "Function(FAS_GetSlaveInfo) was failed." << std::endl;
+        printf("Function(FAS_GetSlaveInfo) was failed.\n");
         return false;
     }
 
-    std::string portStr;
-    for (const wchar_t* p = sPort; *p; ++p) {
-        portStr.push_back(static_cast<char>(*p));
-    }
-    std::cout << "Port " << portStr << " / Slave No " << static_cast<int>(iSlaveNo)
-              << " : TYPE= " << static_cast<int>(byType) << ", Version= " << IpBuff << std::endl;
+    printf("Port %ls / Slave No %d : TYPE= %d, Version= %s\n", sPort, iSlaveNo, byType, IpBuff);
 
     return true;
 }
 
-bool Driver_Connection(const wchar_t* sPort, unsigned int dwBaudRate, int nPortID,
-                       unsigned char iSlaveNo)
+void Driver_Connection(const wchar_t* sPort, unsigned int dwBaudRate, int nPortID, unsigned char iSlaveNo)
 {
     // Device Connect
     if (Connect(sPort, dwBaudRate, nPortID) == false)
     {
-        return false;
+        getchar();
+        exit(1);
     }
 
     // Check Drive information
@@ -63,7 +58,6 @@ bool Driver_Connection(const wchar_t* sPort, unsigned int dwBaudRate, int nPortI
     // }
 
     // Keep connection open; caller is responsible for FAS_Close(nPortID)
-    return true;
 }
 
 bool ServoOn(int nPortID, unsigned char iSlaveNo)
@@ -72,7 +66,7 @@ bool ServoOn(int nPortID, unsigned char iSlaveNo)
 
     if (FAS_GetAxisStatus(nPortID, iSlaveNo, &(AxisStatus.dwValue)) != FMM_OK)
     {
-        std::cout << "Function(FAS_GetAxisStatus) was failed." << std::endl;
+        printf("Function(FAS_GetAxisStatus) was failed.\n");
         return false;
     }
 
@@ -80,7 +74,7 @@ bool ServoOn(int nPortID, unsigned char iSlaveNo)
     {
         if (FAS_ServoEnable(nPortID, iSlaveNo, 1) != FMM_OK)
         {
-            std::cout << "Function(FAS_ServoEnable) was failed." << std::endl;
+            printf("Function(FAS_ServoEnable) was failed.\n");
             return false;
         }
 
@@ -90,17 +84,17 @@ bool ServoOn(int nPortID, unsigned char iSlaveNo)
 
             if (FAS_GetAxisStatus(nPortID, iSlaveNo, &(AxisStatus.dwValue)) != FMM_OK)
             {
-                std::cout << "Function(FAS_GetAxisStatus) was failed." << std::endl;
+                printf("Function(FAS_GetAxisStatus) was failed.\n");
                 return false;
             }
 
             if (AxisStatus.FFLAG_SERVOON)
-                std::cout << "Servo ON" << std::endl;
+                printf("Servo ON\n");
         } while (!AxisStatus.FFLAG_SERVOON);
     }
     else
     {
-        std::cout << "Servo is already ON" << std::endl;
+        printf("Servo is already ON\n");
     }
 
     return true;
@@ -112,7 +106,7 @@ bool ServoOff(int nPortID, unsigned char iSlaveNo)
 
     if (FAS_GetAxisStatus(nPortID, iSlaveNo, &(AxisStatus.dwValue)) != FMM_OK)
     {
-        std::cout << "Function(FAS_GetAxisStatus) was failed." << std::endl;
+        printf("Function(FAS_GetAxisStatus) was failed.\n");
         return false;
     }
 
@@ -120,7 +114,7 @@ bool ServoOff(int nPortID, unsigned char iSlaveNo)
     {
         if (FAS_ServoEnable(nPortID, iSlaveNo, 0) != FMM_OK)
         {
-            std::cout << "Function(FAS_ServoEnable) was failed." << std::endl;
+            printf("Function(FAS_ServoEnable) was failed.\n");
             return false;
         }
 
@@ -130,17 +124,17 @@ bool ServoOff(int nPortID, unsigned char iSlaveNo)
 
             if (FAS_GetAxisStatus(nPortID, iSlaveNo, &(AxisStatus.dwValue)) != FMM_OK)
             {
-                std::cout << "Function(FAS_GetAxisStatus) was failed." << std::endl;
+                printf("Function(FAS_GetAxisStatus) was failed.\n");
                 return false;
             }
 
             if (!AxisStatus.FFLAG_SERVOON)
-                std::cout << "Servo OFF" << std::endl;
+                printf("Servo OFF\n");
         } while (AxisStatus.FFLAG_SERVOON);
     }
     else
     {
-        std::cout << "Servo is already OFF" << std::endl;
+        printf("Servo is already OFF\n");
     }
 
     return true;

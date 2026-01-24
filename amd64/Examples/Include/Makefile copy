@@ -6,8 +6,7 @@ SRC      := tc_6axis.cpp DriverConnection.cpp
 OBJ      := $(SRC:.cpp=.o)
 
 # Flags có thể chỉnh
-AXIS     ?= AXIS_2
-CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I. -D$(AXIS)
+CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I.
 # Thư mục chứa lib (mặc định: current dir ".")
 LIBDIR   ?= .
 LDFLAGS  ?= -L$(LIBDIR) -Wl,-rpath,'$$ORIGIN'

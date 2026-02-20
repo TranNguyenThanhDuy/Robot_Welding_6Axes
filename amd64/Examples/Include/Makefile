@@ -1,17 +1,17 @@
 # ====== Config ======
 CXX      := g++
 TARGET   := test
-GUI_TARGET := tc_6axis_gui
+GUI_TARGET := gui
 
-SRC      := tc_6axis.cpp axis_controller.cpp DriverConnection.cpp
-GUI_SRC  := tc_6axis_gui.cpp axis_controller.cpp DriverConnection.cpp
+SRC      := source/tc_6axis.cpp source/axis_controller.cpp source/DriverConnection.cpp
+GUI_SRC  := source/tc_6axis_gui.cpp source/axis_controller.cpp source/DriverConnection.cpp
 
 # Flags có thể chỉnh
-AXIS     ?= AXIS_6
-CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I. -D$(AXIS)
+AXIS     ?= AXIS_5
+CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Isource -Ilib -D$(AXIS)
 # Thư mục chứa lib (mặc định: current dir ".")
-LIBDIR   ?= .
-LDFLAGS  ?= -L$(LIBDIR) -Wl,-rpath,'$$ORIGIN'
+LIBDIR   ?= lib
+LDFLAGS  ?= -L$(LIBDIR) -Wl,-rpath,'$$ORIGIN/lib'
 LDLIBS   ?= -lEziMOTIONPlusR
 
 QT_CXXFLAGS := $(shell pkg-config --cflags Qt5Widgets)
@@ -37,6 +37,7 @@ $(GUI_OBJDIR):
 	mkdir -p $(GUI_OBJDIR)
 
 $(OBJDIR)/%.o: %.cpp | $(OBJDIR)
+	mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 run: $(TARGET)
@@ -48,9 +49,10 @@ $(GUI_TARGET): $(GUI_OBJ)
 	$(CXX) -o $@ $^ $(LDFLAGS) -no-pie $(LDLIBS) $(QT_LDLIBS)
 
 $(GUI_OBJDIR)/%.o: %.cpp | $(GUI_OBJDIR)
+	mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(QT_CXXFLAGS) -fPIC -c $< -o $@
 
-debug: CXXFLAGS := -std=c++17 -g -O0 -Wall -Wextra -I.
+debug: CXXFLAGS := -std=c++17 -g -O0 -Wall -Wextra -Isource -Ilib
 debug: clean all
 
 clean:

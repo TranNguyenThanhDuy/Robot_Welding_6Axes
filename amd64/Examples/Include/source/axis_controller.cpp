@@ -6,7 +6,7 @@
 #include <string>
 
 AxisController::AxisController() {
-    int portDefaults[6] = {0, 1, 2, 3, 4, 5};
+    int portDefaults[6] = {0, 0, 0, 0, 0, 0};
     unsigned char slaveDefaults[6] = {0, 1, 2, 3, 4, 5};
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         nPortIDs_[i] = portDefaults[i];

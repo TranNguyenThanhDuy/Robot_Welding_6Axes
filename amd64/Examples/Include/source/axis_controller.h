@@ -25,8 +25,8 @@ constexpr size_t AXIS_COUNT = 6;
 #endif
 // ------------------------------------------------------------
 
-constexpr unsigned int base_velocity = 5000;
-constexpr unsigned int min_velocity = 100;
+constexpr unsigned int base_velocity = 20000;
+constexpr unsigned int min_velocity = 5000;
 
 using AxisPorts = std::array<int, AXIS_COUNT>;
 using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;

@@ -74,14 +74,14 @@ make
 Build GUI:
 
 ```bash
-make gui
+make gui AXIS=AXIS_x (thay x = số axis muốn sử dụng)
 ```
 
 Run:
 
 ```bash
-./test
-./gui
+./test (nếu dùng CLI)
+./gui (nếu dùng GUI)
 ```
 
 Clean:

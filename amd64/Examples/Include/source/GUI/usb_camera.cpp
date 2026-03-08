@@ -78,23 +78,17 @@ bool UsbCamera::isOpen() const {
     return capture_.isOpened();
 }
 
-bool UsbCamera::readFrame(QImage& frame) {
+bool UsbCamera::readFrameBgr(cv::Mat& bgrFrame) {
     if (!capture_.isOpened()) {
         lastError_ = "camera is not opened";
         return false;
     }
 
     try {
-        cv::Mat bgr;
-        if (!capture_.read(bgr) || bgr.empty()) {
+        if (!capture_.read(bgrFrame) || bgrFrame.empty()) {
             lastError_ = "capture.read() returned empty frame";
             return false;
         }
-
-        cv::Mat rgb;
-        cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
-        QImage image(rgb.data, rgb.cols, rgb.rows, rgb.step, QImage::Format_RGB888);
-        frame = image.copy();
         return true;
     } catch (const cv::Exception& e) {
         lastError_ = std::string("OpenCV exception: ") + e.what();
@@ -103,6 +97,27 @@ bool UsbCamera::readFrame(QImage& frame) {
         lastError_ = "unknown exception while reading frame";
         return false;
     }
+}
+
+QImage UsbCamera::bgrToQImage(const cv::Mat& bgrFrame) {
+    if (bgrFrame.empty()) {
+        return QImage();
+    }
+
+    cv::Mat rgb;
+    cv::cvtColor(bgrFrame, rgb, cv::COLOR_BGR2RGB);
+    QImage image(rgb.data, rgb.cols, rgb.rows, rgb.step, QImage::Format_RGB888);
+    return image.copy();
+}
+
+bool UsbCamera::readFrame(QImage& frame) {
+    cv::Mat bgr;
+    if (!readFrameBgr(bgr)) {
+        return false;
+    }
+
+    frame = bgrToQImage(bgr);
+    return !frame.isNull();
 }
 
 std::string UsbCamera::lastError() const {

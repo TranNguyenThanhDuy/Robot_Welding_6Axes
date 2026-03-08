@@ -4,7 +4,7 @@ TARGET   := test
 GUI_TARGET := gui
 
 SRC      := source/tc_6axis.cpp source/axis_controller.cpp source/DriverConnection.cpp
-GUI_SRC  := source/GUI/tc_6axis_gui.cpp source/GUI/main_window.cpp source/GUI/gui_log_redirect.cpp source/GUI/usb_camera.cpp source/axis_controller.cpp source/DriverConnection.cpp
+GUI_SRC  := source/GUI/tc_6axis_gui.cpp source/GUI/main_window.cpp source/GUI/gui_log_redirect.cpp source/GUI/usb_camera.cpp source/GUI/weld_detector.cpp source/axis_controller.cpp source/DriverConnection.cpp
 
 # Flags có thể chỉnh
 AXIS     ?= AXIS_5

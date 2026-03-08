@@ -12,4 +12,3 @@ sudo apt install -y \
   qt5-qmake \
   qtbase5-dev-tools \
   libopencv-dev
-

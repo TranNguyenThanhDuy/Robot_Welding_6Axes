@@ -14,10 +14,14 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <opencv2/core/mat.hpp>
+
 #include <iostream>
+#include <vector>
 
 namespace {
 constexpr const char* kUsbCameraDevice = "/dev/video0";
+constexpr const char* kDefaultModelPath = "AI_predict/best.onnx";
 }
 
 MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
@@ -91,26 +95,21 @@ void MainWindow::buildUi() {
     auto* motionButtons = new QHBoxLayout();
     btnMove_ = new QPushButton("MovePos");
     btnGo_ = new QPushButton("Go (Recorded)");
+    btnModeToggle_ = new QPushButton("Mode: AUTO RECORD");
+    btnModeToggle_->setCheckable(true);
     btnRecord_ = new QPushButton("Record");
+    btnSavePos_ = new QPushButton("Save Pos");
     btnStop_ = new QPushButton("Stop");
     btnClear_ = new QPushButton("Clear");
     motionButtons->addWidget(btnMove_);
     motionButtons->addWidget(btnGo_);
+    motionButtons->addWidget(btnModeToggle_);
     motionButtons->addWidget(btnRecord_);
+    motionButtons->addWidget(btnSavePos_);
     motionButtons->addWidget(btnStop_);
     motionButtons->addWidget(btnClear_);
     motionLayout->addLayout(motionButtons);
     root->addWidget(motionBox);
-
-    auto* tableBox = new QGroupBox("Position Table");
-    auto* tableLayout = new QHBoxLayout(tableBox);
-    btnPosTable_ = new QPushButton("Save Table");
-    btnGoPos_ = new QPushButton("GoPos");
-    btnPrintTable_ = new QPushButton("Print Table");
-    tableLayout->addWidget(btnPosTable_);
-    tableLayout->addWidget(btnGoPos_);
-    tableLayout->addWidget(btnPrintTable_);
-    root->addWidget(tableBox);
 
     auto* cameraBox = new QGroupBox("Camera");
     auto* cameraLayout = new QVBoxLayout(cameraBox);
@@ -178,19 +177,24 @@ void MainWindow::connectSignals() {
         }
         controller_.movePos(targets);
     });
+    QObject::connect(btnModeToggle_, &QPushButton::toggled, [&](bool checked) {
+        if (checked) {
+            controller_.setModeSave();
+            btnModeToggle_->setText("Mode: MANUAL SAVE");
+        } else {
+            controller_.setModeRecord();
+            btnModeToggle_->setText("Mode: AUTO RECORD");
+        }
+    });
     QObject::connect(btnGo_, &QPushButton::clicked, [&]() { controller_.go(); });
     QObject::connect(btnRecord_, &QPushButton::clicked,
                      [&]() { controller_.record(); });
+    QObject::connect(btnSavePos_, &QPushButton::clicked,
+                     [&]() { controller_.savePos(); });
     QObject::connect(btnStop_, &QPushButton::clicked,
                      [&]() { controller_.stop(); });
     QObject::connect(btnClear_, &QPushButton::clicked,
                      [&]() { controller_.clear(); });
-    QObject::connect(btnPosTable_, &QPushButton::clicked,
-                     [&]() { controller_.posTable(); });
-    QObject::connect(btnGoPos_, &QPushButton::clicked,
-                     [&]() { controller_.goPos(); });
-    QObject::connect(btnPrintTable_, &QPushButton::clicked,
-                     [&]() { controller_.printTable(); });
     QObject::connect(btnCamStart_, &QPushButton::clicked,
                      [&]() { startUsbCamera(); });
     QObject::connect(btnCamStop_, &QPushButton::clicked,
@@ -224,8 +228,25 @@ void MainWindow::startUsbCamera() {
         return;
     }
 
+    if (!detectorReady_) {
+        const QFileInfo modelFile(QString::fromUtf8(kDefaultModelPath));
+        if (modelFile.exists() && modelFile.isReadable()) {
+            if (detector_.loadModel(kDefaultModelPath)) {
+                detectorReady_ = true;
+                logLine(QString("AI model loaded: %1").arg(QString::fromUtf8(kDefaultModelPath)));
+            } else {
+                logLine(QString("AI model load failed: %1")
+                            .arg(QString::fromStdString(detector_.lastError())));
+            }
+        } else {
+            logLine(QString("AI model not found: %1 (camera will run preview-only)")
+                        .arg(QString::fromUtf8(kDefaultModelPath)));
+        }
+    }
+
     cameraPreview_->setText("Starting USB camera...");
     cameraFrameFailCount_ = 0;
+    detectorFailCount_ = 0;
     cameraTimer_->start();
     logLine(QString("USB camera started: /dev/video0 (format %1)")
                 .arg(QString::fromStdString(camera_.formatName())));
@@ -237,6 +258,7 @@ void MainWindow::stopUsbCamera() {
     }
     camera_.closeDevice();
     cameraFrameFailCount_ = 0;
+    detectorFailCount_ = 0;
 
     if (cameraPreview_) {
         cameraPreview_->setPixmap(QPixmap());
@@ -245,8 +267,8 @@ void MainWindow::stopUsbCamera() {
 }
 
 void MainWindow::updateCameraFrame() {
-    QImage frame;
-    if (!camera_.readFrame(frame)) {
+    cv::Mat frameBgr;
+    if (!camera_.readFrameBgr(frameBgr)) {
         ++cameraFrameFailCount_;
         if (cameraFrameFailCount_ == 30) {
             logLine(QString("Camera opened but no frame received from /dev/video0 (%1)")
@@ -258,6 +280,21 @@ void MainWindow::updateCameraFrame() {
     }
     cameraFrameFailCount_ = 0;
 
+    if (detectorReady_) {
+        std::vector<Detection> detections;
+        if (detector_.detect(frameBgr, detections)) {
+            detector_.drawDetections(frameBgr, detections);
+            detectorFailCount_ = 0;
+        } else {
+            ++detectorFailCount_;
+            if (detectorFailCount_ == 1 || detectorFailCount_ % 60 == 0) {
+                logLine(QString("AI detect failed: %1")
+                            .arg(QString::fromStdString(detector_.lastError())));
+            }
+        }
+    }
+
+    QImage frame = UsbCamera::bgrToQImage(frameBgr);
     cameraPreview_->setPixmap(
         QPixmap::fromImage(frame).scaled(cameraPreview_->size(),
                                          Qt::KeepAspectRatio,

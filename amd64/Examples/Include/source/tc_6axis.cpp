@@ -11,12 +11,15 @@ void showCommands() {
     std::cout << "off: Servo off (" << AXIS_COUNT << " motors)" << std::endl;
     std::cout << "home: Homing all motors (Only works in servo on)" << std::endl;
     std::cout << "record: Start recording all motors (Only works in servo off)" << std::endl;
+    std::cout << "save pos: Save current position snapshot to buffer" << std::endl;
+    std::cout << "mode record: Switch to AUTO RECORD mode" << std::endl;
+    std::cout << "mode save: Switch to MANUAL SAVE mode" << std::endl;
+    std::cout << "mode: Show current capture mode" << std::endl;
     std::cout << "stop: Stop recording" << std::endl;
     std::cout << "clear: Clear buffer" << std::endl;
     std::cout << "getpos: Print current positions of all motors" << std::endl;
     std::cout << "go: Go with positions in buffer (Only works in servo on)" << std::endl;
-    std::cout << "movepos: Move motors to specified positions (Only works in servo on)"
-              << std::endl;
+    std::cout << "movepos: Move motors to specified positions (Only works in servo on)"<< std::endl;
     std::cout << "go pos: Run items saved in position table (Only works in servo on)" << std::endl;
     std::cout << "postable: Save record to position table" << std::endl;
     std::cout << "print table: Print position table" << std::endl;
@@ -47,6 +50,14 @@ int main() {
             controller.home();
         } else if (cmd == "record") {
             controller.record();
+        } else if (cmd == "save pos" || cmd == "savepos") {
+            controller.savePos();
+        } else if (cmd == "mode") {
+            std::cout << "Current capture mode: " << controller.modeName() << std::endl;
+        } else if (cmd == "mode record" || cmd == "mode auto") {
+            controller.setModeRecord();
+        } else if (cmd == "mode save" || cmd == "mode manual") {
+            controller.setModeSave();
         } else if (cmd == "stop") {
             controller.stop();
         } else if (cmd == "clear") {
@@ -94,7 +105,8 @@ int main() {
             controller.setOriginPos();
         } else {
             std::cout << "Unknown command. Use 'on', 'off', 'home', 'record', 'stop', 'clear', "
-                         "'getpos', 'go', 'movepos', 'go pos', 'postable', 'print table', "
+                         "'getpos', 'go', 'movepos', 'save pos', 'mode', 'mode record', "
+                         "'mode save', 'go pos', 'postable', 'print table', "
                          "'setpos', or 'q'."
                       << std::endl;
         }

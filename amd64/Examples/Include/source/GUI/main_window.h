@@ -3,6 +3,7 @@
 #include "axis_controller.h"
 #include "gui_log_redirect.h"
 #include "usb_camera.h"
+#include "weld_detector.h"
 
 #include <memory>
 #include <vector>
@@ -41,12 +42,11 @@ private:
     QPushButton* btnGetPos_ = nullptr;
     QPushButton* btnMove_ = nullptr;
     QPushButton* btnGo_ = nullptr;
+    QPushButton* btnModeToggle_ = nullptr;
     QPushButton* btnRecord_ = nullptr;
+    QPushButton* btnSavePos_ = nullptr;
     QPushButton* btnStop_ = nullptr;
     QPushButton* btnClear_ = nullptr;
-    QPushButton* btnPosTable_ = nullptr;
-    QPushButton* btnGoPos_ = nullptr;
-    QPushButton* btnPrintTable_ = nullptr;
     QPushButton* btnCamStart_ = nullptr;
     QPushButton* btnCamStop_ = nullptr;
 
@@ -56,4 +56,8 @@ private:
     UsbCamera camera_;
     QTimer* cameraTimer_ = nullptr;
     int cameraFrameFailCount_ = 0;
+
+    WeldDetector detector_;
+    bool detectorReady_ = false;
+    int detectorFailCount_ = 0;
 };

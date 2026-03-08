@@ -29,6 +29,24 @@ bool AxisController::isRecording() const {
     return recording_.load();
 }
 
+void AxisController::setModeRecord() {
+    capture_mode_.store(static_cast<int>(CaptureMode::AutoRecord));
+    std::cout << "Capture mode switched to AUTO RECORD." << std::endl;
+}
+
+void AxisController::setModeSave() {
+    capture_mode_.store(static_cast<int>(CaptureMode::ManualSave));
+    std::cout << "Capture mode switched to MANUAL SAVE." << std::endl;
+}
+
+bool AxisController::isSaveMode() const {
+    return capture_mode_.load() == static_cast<int>(CaptureMode::ManualSave);
+}
+
+std::string AxisController::modeName() const {
+    return isSaveMode() ? "MANUAL SAVE" : "AUTO RECORD";
+}
+
 bool AxisController::readAxisStatuses(AxisStatuses& statuses) {
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) != FMM_OK) {
@@ -218,6 +236,11 @@ void AxisController::recordingThread() {
 }
 
 void AxisController::record() {
+    if (isSaveMode()) {
+        std::cout << "Current mode is MANUAL SAVE. Switch mode to AUTO RECORD first."
+                  << std::endl;
+        return;
+    }
     if (recording_.load()) {
         std::cout << "Already recording." << std::endl;
         return;
@@ -226,6 +249,34 @@ void AxisController::record() {
     rec_thread_ = std::thread(&AxisController::recordingThread, this);
     std::cout << "Recording started for all motors (capturing positions only). Type 'stop' to end."
               << std::endl;
+}
+
+bool AxisController::savePos() {
+    if (!isSaveMode()) {
+        std::cout << "Current mode is AUTO RECORD. Switch mode to MANUAL SAVE first."
+                  << std::endl;
+        return false;
+    }
+    AxisPositions pos{};
+    if (!readActualPositions(pos)) {
+        std::cout << "Failed to read current positions. Save pos aborted." << std::endl;
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lk(rec_mtx_);
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        saved_positions_[i].push_back(pos[i]);
+    }
+
+    std::cout << "Saved current position to manual buffer. Total manual points: "
+              << saved_positions_[0].size() << std::endl;
+    std::cout << "Saved - ";
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        std::cout << axisName(i) << ": " << pos[i];
+        if (i + 1 < AXIS_COUNT) std::cout << ", ";
+    }
+    std::cout << std::endl;
+    return true;
 }
 
 void AxisController::stopRecordingThread() {
@@ -261,7 +312,11 @@ void AxisController::clear() {
     for (auto& path : recorded_positions_) {
         path.clear();
     }
-    std::cout << "Cleared recorded positions for all motors." << std::endl;
+    for (auto& path : saved_positions_) {
+        path.clear();
+    }
+    std::cout << "Cleared recorded(auto) and saved(manual) positions for all motors."
+              << std::endl;
 }
 
 bool AxisController::getPos(AxisPositions& pos) {
@@ -280,16 +335,19 @@ bool AxisController::go() {
         return false;
     }
 
+    bool useManual = isSaveMode();
     AxisVectors paths;
     {
         std::lock_guard<std::mutex> lk(rec_mtx_);
-        paths = recorded_positions_;
+        paths = useManual ? saved_positions_ : recorded_positions_;
     }
+    std::cout << "Go uses " << (useManual ? "manual saved" : "auto recorded")
+              << " positions." << std::endl;
 
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         if (paths[i].empty()) {
-            std::cout << axisName(i) << " has no recorded positions. Use 'record' first."
-                      << std::endl;
+            std::cout << axisName(i) << " has no positions in current mode (" << modeName()
+                      << ")." << std::endl;
             return false;
         }
     }
@@ -522,11 +580,14 @@ bool AxisController::goPos() {
 }
 
 void AxisController::posTable() {
+    bool useManual = isSaveMode();
     AxisVectors paths;
     {
         std::lock_guard<std::mutex> lk(rec_mtx_);
-        paths = recorded_positions_;
+        paths = useManual ? saved_positions_ : recorded_positions_;
     }
+    std::cout << "Position table uses " << (useManual ? "manual saved" : "auto recorded")
+              << " positions." << std::endl;
 
     bool anyData = false;
     for (const auto& p : paths) {
@@ -537,7 +598,8 @@ void AxisController::posTable() {
     }
 
     if (!anyData) {
-        std::cout << "No recorded positions to write. Use 'record' first." << std::endl;
+        std::cout << "No positions to write in current mode (" << modeName() << ")."
+                  << std::endl;
         return;
     }
 

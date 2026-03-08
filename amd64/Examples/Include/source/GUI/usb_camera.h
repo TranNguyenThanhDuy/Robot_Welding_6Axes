@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 
+#include <opencv2/core/mat.hpp>
 #include <opencv2/videoio.hpp>
 
 class UsbCamera {
@@ -18,6 +19,8 @@ public:
     void closeDevice();
     bool isOpen() const;
     bool readFrame(QImage& frame);
+    bool readFrameBgr(cv::Mat& bgrFrame);
+    static QImage bgrToQImage(const cv::Mat& bgrFrame);
 
     std::string lastError() const;
     std::string formatName() const;

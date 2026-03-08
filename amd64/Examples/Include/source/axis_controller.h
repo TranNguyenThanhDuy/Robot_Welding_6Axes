@@ -26,7 +26,7 @@ constexpr size_t AXIS_COUNT = 6;
 // ------------------------------------------------------------
 
 constexpr unsigned int base_velocity = 20000;
-constexpr unsigned int min_velocity = 5000;
+constexpr unsigned int min_velocity = 10;
 
 using AxisPorts = std::array<int, AXIS_COUNT>;
 using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
@@ -46,6 +46,11 @@ public:
     bool servoOff();
     bool home();
     void record();
+    bool savePos();
+    void setModeRecord();
+    void setModeSave();
+    bool isSaveMode() const;
+    std::string modeName() const;
     void stop();
     void clear();
     bool getPos(AxisPositions& pos);
@@ -59,6 +64,11 @@ public:
     bool isRecording() const;
 
 private:
+    enum class CaptureMode : int {
+        AutoRecord = 0,
+        ManualSave = 1
+    };
+
     bool readAxisStatuses(AxisStatuses& statuses);
     bool readActualPositions(AxisPositions& positions);
     AxisVelocities computeVelocities(const AxisPositions& current,
@@ -71,7 +81,9 @@ private:
     AxisPorts nPortIDs_{};
     AxisSlaves iSlaveNos_{};
     AxisVectors recorded_positions_{};
+    AxisVectors saved_positions_{};
     std::mutex rec_mtx_{};
+    std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::AutoRecord)};
     std::atomic<bool> recording_{false};
     std::thread rec_thread_{};
 };

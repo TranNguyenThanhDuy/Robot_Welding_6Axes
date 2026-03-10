@@ -25,6 +25,7 @@ private:
     void buildUi();
     void connectSignals();
     void logLine(const QString& text);
+    void logDetections(const std::vector<Detection>& detections);
     void startUsbCamera();
     void stopUsbCamera();
     void updateCameraFrame();
@@ -60,4 +61,5 @@ private:
     WeldDetector detector_;
     bool detectorReady_ = false;
     int detectorFailCount_ = 0;
+    int detectorNoDetectionCount_ = 0;
 };

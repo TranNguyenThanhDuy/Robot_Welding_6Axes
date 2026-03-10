@@ -1,5 +1,7 @@
 #include "main_window.h"
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QFont>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -22,6 +24,24 @@
 namespace {
 constexpr const char* kUsbCameraDevice = "/dev/video0";
 constexpr const char* kDefaultModelPath = "AI_predict/best.onnx";
+
+QString resolveModelPath() {
+    const QString relativePath = QString::fromUtf8(kDefaultModelPath);
+    const QStringList candidates = {
+        QDir::current().absoluteFilePath(relativePath),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(relativePath),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("../") + relativePath)
+    };
+
+    for (const QString& candidate : candidates) {
+        const QFileInfo modelFile(candidate);
+        if (modelFile.exists() && modelFile.isReadable()) {
+            return modelFile.absoluteFilePath();
+        }
+    }
+
+    return QString();
+}
 }
 
 MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
@@ -207,6 +227,19 @@ void MainWindow::logLine(const QString& text) {
     std::cout << text.toStdString() << std::endl;
 }
 
+void MainWindow::logDetections(const std::vector<Detection>& detections) {
+    for (size_t i = 0; i < detections.size(); ++i) {
+        const Detection& d = detections[i];
+        logLine(QString("Detection %1: x=%2 y=%3 w=%4 h=%5 conf=%6")
+                    .arg(i + 1)
+                    .arg(d.box.x)
+                    .arg(d.box.y)
+                    .arg(d.box.width)
+                    .arg(d.box.height)
+                    .arg(d.confidence, 0, 'f', 2));
+    }
+}
+
 void MainWindow::startUsbCamera() {
     if (camera_.isOpen()) {
         return;
@@ -229,11 +262,11 @@ void MainWindow::startUsbCamera() {
     }
 
     if (!detectorReady_) {
-        const QFileInfo modelFile(QString::fromUtf8(kDefaultModelPath));
-        if (modelFile.exists() && modelFile.isReadable()) {
-            if (detector_.loadModel(kDefaultModelPath)) {
+        const QString modelPath = resolveModelPath();
+        if (!modelPath.isEmpty()) {
+            if (detector_.loadModel(modelPath.toStdString())) {
                 detectorReady_ = true;
-                logLine(QString("AI model loaded: %1").arg(QString::fromUtf8(kDefaultModelPath)));
+                logLine(QString("AI model loaded: %1").arg(modelPath));
             } else {
                 logLine(QString("AI model load failed: %1")
                             .arg(QString::fromStdString(detector_.lastError())));
@@ -247,6 +280,7 @@ void MainWindow::startUsbCamera() {
     cameraPreview_->setText("Starting USB camera...");
     cameraFrameFailCount_ = 0;
     detectorFailCount_ = 0;
+    detectorNoDetectionCount_ = 0;
     cameraTimer_->start();
     logLine(QString("USB camera started: /dev/video0 (format %1)")
                 .arg(QString::fromStdString(camera_.formatName())));
@@ -259,6 +293,7 @@ void MainWindow::stopUsbCamera() {
     camera_.closeDevice();
     cameraFrameFailCount_ = 0;
     detectorFailCount_ = 0;
+    detectorNoDetectionCount_ = 0;
 
     if (cameraPreview_) {
         cameraPreview_->setPixmap(QPixmap());
@@ -283,6 +318,15 @@ void MainWindow::updateCameraFrame() {
     if (detectorReady_) {
         std::vector<Detection> detections;
         if (detector_.detect(frameBgr, detections)) {
+            if (!detections.empty()) {
+                logDetections(detections);
+                detectorNoDetectionCount_ = 0;
+            } else {
+                ++detectorNoDetectionCount_;
+                if (detectorNoDetectionCount_ == 1 || detectorNoDetectionCount_ % 120 == 0) {
+                    logLine("AI inference active: no detections in current frames.");
+                }
+            }
             detector_.drawDetections(frameBgr, detections);
             detectorFailCount_ = 0;
         } else {

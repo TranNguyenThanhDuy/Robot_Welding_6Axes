@@ -197,14 +197,21 @@ void MainWindow::connectSignals() {
         }
         controller_.movePos(targets);
     });
-    QObject::connect(btnModeToggle_, &QPushButton::toggled, [&](bool checked) {
-        if (checked) {
-            controller_.setModeSave();
-            btnModeToggle_->setText("Mode: MANUAL SAVE");
-        } else {
+    QObject::connect(btnModeToggle_, &QPushButton::clicked, [&]() {
+        if (controller_.isSaveMode()) {
             controller_.setModeRecord();
             btnModeToggle_->setText("Mode: AUTO RECORD");
         }
+        else if (controller_.isFileMode()) {
+            controller_.setModeSave();
+            btnModeToggle_->setText("Mode: MANUAL SAVE");
+
+        } 
+        else {
+            controller_.setModeFile();
+            btnModeToggle_->setText("Mode: File");
+        }
+
     });
     QObject::connect(btnGo_, &QPushButton::clicked, [&]() { controller_.go(); });
     QObject::connect(btnRecord_, &QPushButton::clicked,

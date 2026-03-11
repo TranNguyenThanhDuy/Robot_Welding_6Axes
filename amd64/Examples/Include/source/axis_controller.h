@@ -49,6 +49,7 @@ public:
     bool savePos();
     void setModeRecord();
     void setModeSave();
+    bool isFileMode() const;
     bool isSaveMode() const;
     std::string modeName() const;
     void stop();
@@ -62,11 +63,14 @@ public:
     void setOriginPos();
     std::string axisName(size_t idx) const;
     bool isRecording() const;
+    bool goFromFile(const std::string& filename);
+    void setModeFile();
 
 private:
     enum class CaptureMode : int {
-        AutoRecord = 0,
-        ManualSave = 1
+        FileMode = 0,
+        ManualSave = 1,
+        AutoRecord = 2
     };
 
     bool readAxisStatuses(AxisStatuses& statuses);
@@ -77,13 +81,16 @@ private:
     bool allServoOn(const AxisStatuses& statuses) const;
     void recordingThread();
     void stopRecordingThread();
-
+    bool goWithBuffer(const AxisVectors& paths);
+    bool loadFileToBuffer(const std::string& filename);
+   
+    AxisVectors file_buffer_;
     AxisPorts nPortIDs_{};
     AxisSlaves iSlaveNos_{};
     AxisVectors recorded_positions_{};
     AxisVectors saved_positions_{};
     std::mutex rec_mtx_{};
-    std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::AutoRecord)};
+    std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::FileMode)};
     std::atomic<bool> recording_{false};
     std::thread rec_thread_{};
 };

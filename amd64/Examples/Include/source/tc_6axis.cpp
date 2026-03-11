@@ -76,7 +76,7 @@ int main() {
             }
             std::cout << std::endl;
         } else if (cmd == "go") {
-            controller.go();
+                controller.go();
         } else if (cmd == "movepos" || cmd == "move pos") {
             AxisPositions targets{};
             bool inputOk = true;

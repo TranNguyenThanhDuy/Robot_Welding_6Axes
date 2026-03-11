@@ -4,6 +4,8 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <fstream>
+#include <sstream>
 
 AxisController::AxisController() {
     int portDefaults[6] = {0, 0, 0, 0, 0, 0};
@@ -21,17 +23,68 @@ AxisController::~AxisController() {
     }
 }
 
+constexpr size_t MAX_BUFFERS = 8;
+// AxisVectors recorded_positions;
+std::mutex rec_mtx;
+std::atomic<bool> recording{false};
+std::thread rec_thread;
+
 std::string AxisController::axisName(size_t idx) const {
     return "Motor " + std::to_string(idx + 1);
 }
 
-bool AxisController::isRecording() const {
-    return recording_.load();
+using RecordBuffers = std::array<AxisVectors, MAX_BUFFERS>;
+
+RecordBuffers recorded_positions_buffers;
+
+std::atomic<size_t> currentRecordingBuffer{MAX_BUFFERS - 1};
+std::atomic<size_t> bufferCount{0};
+
+AxisVectors downsampleBuffer(
+    const AxisVectors& in,
+    size_t step
+) {
+    AxisVectors out;
+    if (in[0].empty()) return out;
+
+    size_t len = in[0].size();
+    for (size_t i = 0; i < len; i += step) {
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            out[a].push_back(in[a][i]);
+        }
+    }
+    return out;
 }
 
-void AxisController::setModeRecord() {
-    capture_mode_.store(static_cast<int>(CaptureMode::AutoRecord));
-    std::cout << "Capture mode switched to AUTO RECORD." << std::endl;
+struct GoPlanner {
+    std::vector<AxisPositions> steps;
+    size_t cursor = 0;
+
+    void clear() {
+        steps.clear();
+        cursor = 0;
+    }
+
+    bool ready() const {
+        return !steps.empty();
+    }
+
+    void reset() {
+        cursor = 0;
+    }
+
+    bool next(AxisPositions& out) {
+        if (cursor >= steps.size()) return false;
+        out = steps[cursor++];
+        return true;
+    }
+};
+
+GoPlanner goPlanner;
+std::atomic<bool> plannerReady{false};
+
+bool AxisController::isRecording() const {
+    return recording_.load();
 }
 
 void AxisController::setModeSave() {
@@ -39,12 +92,27 @@ void AxisController::setModeSave() {
     std::cout << "Capture mode switched to MANUAL SAVE." << std::endl;
 }
 
+void AxisController::setModeRecord() {
+    capture_mode_.store(static_cast<int>(CaptureMode::AutoRecord));
+    std::cout << "Capture mode switched to AUTO RECORD." << std::endl;
+}
 bool AxisController::isSaveMode() const {
     return capture_mode_.load() == static_cast<int>(CaptureMode::ManualSave);
 }
 
+void AxisController::setModeFile() {
+    capture_mode_.store(static_cast<int>(CaptureMode::FileMode));
+    std::cout << "Capture mode switched to FILE." << std::endl;
+}
+
+bool AxisController::isFileMode() const {
+    return capture_mode_.load() == static_cast<int>(CaptureMode::FileMode);
+}
+
 std::string AxisController::modeName() const {
-    return isSaveMode() ? "MANUAL SAVE" : "AUTO RECORD";
+    return isSaveMode() ? "MANUAL SAVE"
+         : isFileMode() ? "FILE"
+         : "AUTO RECORD";
 }
 
 bool AxisController::readAxisStatuses(AxisStatuses& statuses) {
@@ -150,6 +218,52 @@ bool AxisController::servoOff() {
     return allOk;
 }
 
+AxisVectors compressBuffer(
+    const AxisVectors& in,
+    int posEps,
+    int minTrendLen
+) {
+    AxisVectors out;
+    size_t N = in[0].size();
+    if (N < 2) return in;
+
+    std::vector<bool> keep(N, false);
+    keep[0] = true;
+
+    for (size_t a = 0; a < AXIS_COUNT; ++a) {
+        int lastDir = 0;
+        int trendLen = 0;
+
+        for (size_t i = 1; i < N; ++i) {
+            int diff = in[a][i] - in[a][i - 1];
+            if (std::abs(diff) < posEps)
+                continue;
+
+            int dir = (diff > 0) ? 1 : -1;
+
+            if (dir == lastDir) {
+                trendLen++;
+            } else {
+                if (trendLen >= minTrendLen) {
+                    keep[i - 1] = true;
+                }
+                trendLen = 1;
+                lastDir = dir;
+            }
+        }
+        keep[N - 1] = true;
+    }
+
+    for (size_t i = 0; i < N; ++i) {
+        if (!keep[i]) continue;
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            out[a].push_back(in[a][i]);
+        }
+    }
+
+    return out;
+}
+
 bool AxisController::home() {
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses)) {
@@ -204,79 +318,48 @@ bool AxisController::home() {
 }
 
 void AxisController::recordingThread() {
-    AxisPositions lastPos{};
-    AxisBools hasLast{};
+    constexpr int RECORD_PERIOD_MS = 10;
 
     while (recording_.load()) {
         AxisPositions pos{};
+
         if (!readActualPositions(pos)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(RECORD_PERIOD_MS)
+            );
             continue;
         }
 
-        bool changed = false;
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            if (!hasLast[i] || pos[i] != lastPos[i]) {
-                changed = true;
-                break;
-            }
-        }
-
-        if (changed) {
+        {
             std::lock_guard<std::mutex> lk(rec_mtx_);
             for (size_t i = 0; i < AXIS_COUNT; ++i) {
                 recorded_positions_[i].push_back(pos[i]);
-                lastPos[i] = pos[i];
-                hasLast[i] = true;
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(RECORD_PERIOD_MS)
+        );
     }
 }
 
 void AxisController::record() {
-    if (isSaveMode()) {
-        std::cout << "Current mode is MANUAL SAVE. Switch mode to AUTO RECORD first."
-                  << std::endl;
-        return;
-    }
     if (recording_.load()) {
         std::cout << "Already recording." << std::endl;
         return;
     }
+
+    {
+        std::lock_guard<std::mutex> lk(rec_mtx_);
+        for (auto& v : recorded_positions_) {
+            v.clear();
+        }
+    }
+
     recording_.store(true);
     rec_thread_ = std::thread(&AxisController::recordingThread, this);
-    std::cout << "Recording started for all motors (capturing positions only). Type 'stop' to end."
-              << std::endl;
-}
 
-bool AxisController::savePos() {
-    if (!isSaveMode()) {
-        std::cout << "Current mode is AUTO RECORD. Switch mode to MANUAL SAVE first."
-                  << std::endl;
-        return false;
-    }
-    AxisPositions pos{};
-    if (!readActualPositions(pos)) {
-        std::cout << "Failed to read current positions. Save pos aborted." << std::endl;
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lk(rec_mtx_);
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        saved_positions_[i].push_back(pos[i]);
-    }
-
-    std::cout << "Saved current position to manual buffer. Total manual points: "
-              << saved_positions_[0].size() << std::endl;
-    std::cout << "Saved - ";
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        std::cout << axisName(i) << ": " << pos[i];
-        if (i + 1 < AXIS_COUNT) std::cout << ", ";
-    }
-    std::cout << std::endl;
-    return true;
+    std::cout << "Recording started." << std::endl;
 }
 
 void AxisController::stopRecordingThread() {
@@ -312,103 +395,137 @@ void AxisController::clear() {
     for (auto& path : recorded_positions_) {
         path.clear();
     }
-    for (auto& path : saved_positions_) {
-        path.clear();
-    }
-    std::cout << "Cleared recorded(auto) and saved(manual) positions for all motors."
-              << std::endl;
+    std::cout << "Cleared recorded positions for all motors." << std::endl;
 }
 
 bool AxisController::getPos(AxisPositions& pos) {
     return readActualPositions(pos);
 }
 
-bool AxisController::go() {
+bool AxisController::goWithBuffer(const AxisVectors& paths) {
+
+    if (paths[0].empty()) {
+        std::cout << "Buffer empty." << std::endl;
+        return false;
+    }
+
     AxisStatuses statuses{};
-    if (!readAxisStatuses(statuses)) {
-        std::cout << "Function(FAS_GetAxisStatus) failed." << std::endl;
+    if (!readAxisStatuses(statuses) || !allServoOn(statuses)) {
+        std::cout << "Servo OFF." << std::endl;
         return false;
     }
 
-    if (!allServoOn(statuses)) {
-        std::cout << "Some servos are OFF. Turn them ON before moving." << std::endl;
-        return false;
-    }
+    size_t steps = paths[0].size();
 
-    bool useManual = isSaveMode();
-    AxisVectors paths;
-    {
-        std::lock_guard<std::mutex> lk(rec_mtx_);
-        paths = useManual ? saved_positions_ : recorded_positions_;
-    }
-    std::cout << "Go uses " << (useManual ? "manual saved" : "auto recorded")
-              << " positions." << std::endl;
+    for (size_t i = 0; i < steps; ++i) {
 
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (paths[i].empty()) {
-            std::cout << axisName(i) << " has no positions in current mode (" << modeName()
-                      << ")." << std::endl;
-            return false;
-        }
-    }
-
-    size_t maxSteps = 0;
-    for (const auto& p : paths) {
-        if (p.size() > maxSteps) maxSteps = p.size();
-    }
-
-    for (size_t step = 0; step < maxSteps; ++step) {
-        AxisPositions current{};
-        readActualPositions(current);
-
-        AxisPositions targets{};
+        AxisPositions target{};
         AxisBools hasCommand{};
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            if (step < paths[i].size()) {
-                targets[i] = paths[i][step];
-                hasCommand[i] = true;
-            }
+
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            target[a] = paths[a][i];
+            hasCommand[a] = true;
         }
 
-        AxisVelocities velocities = computeVelocities(current, targets, hasCommand);
+        AxisPositions current{};
+        if (!readActualPositions(current)) return false;
 
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            if (!hasCommand[i]) continue;
-            if (FAS_MoveSingleAxisAbsPos(nPortIDs_[i], iSlaveNos_[i], targets[i],
-                                         velocities[i]) != FMM_OK) {
-                std::cout << axisName(i) << " move to " << targets[i] << " failed." << std::endl;
+        AxisVelocities velocities =
+            computeVelocities(current, target, hasCommand);
+
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            FAS_MoveSingleAxisAbsPos(
+                nPortIDs_[a],
+                iSlaveNos_[a],
+                target[a],
+                velocities[a]
+            );
+        }
+
+        AxisStatuses st{};
+        while (true) {
+            bool done = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+            for (size_t a = 0; a < AXIS_COUNT; ++a) {
+                FAS_GetAxisStatus(
+                    nPortIDs_[a],
+                    iSlaveNos_[a],
+                    &st[a].dwValue
+                );
+                done &= !st[a].FFLAG_MOTIONING;
+            }
+            if (done) break;
+        }
+    }
+
+    std::cout << "GO finished." << std::endl;
+    return true;
+}
+
+bool AxisController::goFromFile(const std::string& filename)
+{
+    std::ifstream file(filename);
+
+    if (!file.is_open()) {
+        std::cout << "Cannot open file: " << filename << std::endl;
+        return false;
+    }
+
+    // Lưu tạm vào buffer theo dạng mảng các dòng (array of rows)
+    std::vector<AxisPositions> pathBuffer; 
+    std::string line;
+
+    while (std::getline(file, line))
+    {
+        if (line.empty()) continue;
+
+        std::stringstream ss(line);
+        AxisPositions pos{};
+
+        for (size_t i = 0; i < AXIS_COUNT; i++)
+        {
+            if (!(ss >> pos[i]))
+            {
+                std::cout << "Format error at line: " << line << "\n";
                 return false;
             }
         }
+        
+        // Lưu vào mảng 1 chiều chứa các dòng
+        pathBuffer.push_back(pos);
+    }
 
-        AxisBools done{};
-        while (true) {
-            bool allDone = true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            for (size_t i = 0; i < AXIS_COUNT; ++i) {
-                if (!hasCommand[i] || done[i]) continue;
-                if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) ==
-                    FMM_OK) {
-                    done[i] = !statuses[i].FFLAG_MOTIONING;
-                }
-                allDone = allDone && (done[i] || !hasCommand[i]);
-            }
-            if (allDone) break;
+    // --- PHẦN BẠN ĐANG THIẾU: Chuyển đổi và gọi hàm ---
+    AxisVectors compatiblePaths;
+    for (const auto& row : pathBuffer) {
+        for (size_t i = 0; i < AXIS_COUNT; i++) {
+            compatiblePaths[i].push_back(row[i]);
         }
     }
 
-    AxisPositions finalPos{};
-    if (readActualPositions(finalPos)) {
-        std::cout << "Go complete. Final positions - ";
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            std::cout << axisName(i) << ": " << finalPos[i];
-            if (i + 1 < AXIS_COUNT) std::cout << ", ";
-        }
-        std::cout << std::endl;
-    } else {
-        std::cout << "Go complete." << std::endl;
+    // Truyền dữ liệu đã chuyển đổi vào hàm thực thi
+    return goWithBuffer(compatiblePaths); 
+}
+
+bool AxisController::go() {
+    auto mode = capture_mode_.load();
+    if (mode == static_cast<int>(CaptureMode::FileMode)) {
+        return goFromFile("sample.txt");
     }
-    return true;
+    else if (mode == static_cast<int>(CaptureMode::ManualSave)) {
+        std::cout << "GO command is only available in AUTO RECORD or FILE mode." << std::endl;
+        return false;
+    }
+    AxisVectors paths;
+    {
+        std::lock_guard<std::mutex> lk(rec_mtx_);
+        paths = recorded_positions_;
+    }
+
+    paths = compressBuffer(paths, 5, 6);
+
+    return goWithBuffer(paths);
 }
 
 bool AxisController::movePos(const AxisPositions& targets) {
@@ -579,15 +696,40 @@ bool AxisController::goPos() {
     return true;
 }
 
+bool AxisController::savePos() {
+    if (!isSaveMode()) {
+        std::cout << "Current mode is AUTO RECORD. Switch mode to MANUAL SAVE first."
+                  << std::endl;
+        return false;
+    }
+    AxisPositions pos{};
+    if (!readActualPositions(pos)) {
+        std::cout << "Failed to read current positions. Save pos aborted." << std::endl;
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lk(rec_mtx_);
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        saved_positions_[i].push_back(pos[i]);
+    }
+
+    std::cout << "Saved current position to manual buffer. Total manual points: "
+              << saved_positions_[0].size() << std::endl;
+    std::cout << "Saved - ";
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        std::cout << axisName(i) << ": " << pos[i];
+        if (i + 1 < AXIS_COUNT) std::cout << ", ";
+    }
+    std::cout << std::endl;
+    return true;
+}
+
 void AxisController::posTable() {
-    bool useManual = isSaveMode();
     AxisVectors paths;
     {
         std::lock_guard<std::mutex> lk(rec_mtx_);
-        paths = useManual ? saved_positions_ : recorded_positions_;
+        paths = recorded_positions_;
     }
-    std::cout << "Position table uses " << (useManual ? "manual saved" : "auto recorded")
-              << " positions." << std::endl;
 
     bool anyData = false;
     for (const auto& p : paths) {
@@ -598,8 +740,7 @@ void AxisController::posTable() {
     }
 
     if (!anyData) {
-        std::cout << "No positions to write in current mode (" << modeName() << ")."
-                  << std::endl;
+        std::cout << "No recorded positions to write. Use 'record' first." << std::endl;
         return;
     }
 
@@ -698,4 +839,41 @@ void AxisController::setOriginPos() {
     if (allOk) {
         std::cout << "All axes positions set to 0." << std::endl;
     }
+}
+
+bool AxisController::loadFileToBuffer(const std::string& filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cout << "Cannot open file: " << filename << std::endl;
+        return false;
+    }
+
+    AxisVectors temp;
+    for (auto& v : temp) v.clear();
+
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+
+        std::stringstream ss(line);
+        AxisPositions pos{};
+
+        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+            if (!(ss >> pos[i])) {
+                std::cout << "Format error." << std::endl;
+                return false;
+            }
+        }
+
+        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+            temp[i].push_back(pos[i]);
+        }
+    }
+
+    file_buffer_ = temp;
+
+    std::cout << "File buffer loaded. Steps: "
+              << file_buffer_[0].size() << std::endl;
+
+    return true;
 }

@@ -65,6 +65,8 @@ public:
     bool isRecording() const;
     bool goFromFile(const std::string& filename);
     void setModeFile();
+    void setFileName(const std::string& name);
+    std::string FileName() const;
 
 private:
     enum class CaptureMode : int {
@@ -93,4 +95,6 @@ private:
     std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::FileMode)};
     std::atomic<bool> recording_{false};
     std::thread rec_thread_{};
+
+    std::string filename_;
 };

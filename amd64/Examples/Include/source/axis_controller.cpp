@@ -508,10 +508,24 @@ bool AxisController::goFromFile(const std::string& filename)
     return goWithBuffer(compatiblePaths); 
 }
 
+void AxisController::setFileName(const std::string& name)
+{
+    filename_ = name;
+}
+
+std::string AxisController::FileName() const
+{
+    return filename_;
+}
+
 bool AxisController::go() {
     auto mode = capture_mode_.load();
     if (mode == static_cast<int>(CaptureMode::FileMode)) {
-        return goFromFile("sample.txt");
+        if (filename_.empty()) {
+            std::cout << "File path is empty." << std::endl;
+            return false;
+        }
+        return goFromFile(filename_);
     }
     else if (mode == static_cast<int>(CaptureMode::ManualSave)) {
         std::cout << "GO command is only available in AUTO RECORD or FILE mode." << std::endl;

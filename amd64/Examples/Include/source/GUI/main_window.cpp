@@ -16,6 +16,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <QLineEdit>//để điền link
+
 #include <opencv2/core/mat.hpp>
 
 #include <iostream>
@@ -131,6 +133,17 @@ void MainWindow::buildUi() {
     motionLayout->addLayout(motionButtons);
     root->addWidget(motionBox);
 
+    auto* fileBox = new QGroupBox("File Path");
+    auto* fileLayout = new QHBoxLayout(fileBox);
+
+    filePathEdit_ = new QLineEdit();
+    filePathEdit_->setPlaceholderText("Enter file path...");
+
+    fileLayout->addWidget(new QLabel("Path:"));
+    fileLayout->addWidget(filePathEdit_);
+
+    root->addWidget(fileBox);
+
     auto* cameraBox = new QGroupBox("Camera");
     auto* cameraLayout = new QVBoxLayout(cameraBox);
     cameraPreview_ = new QLabel("Camera Preview");
@@ -212,6 +225,19 @@ void MainWindow::connectSignals() {
             btnModeToggle_->setText("Mode: File");
         }
 
+    });
+    QObject::connect(filePathEdit_, &QLineEdit::editingFinished, [&]() {
+
+        QString path = filePathEdit_->text();
+
+        if (path.isEmpty())
+            return;
+
+        QString linuxPath = convertPathToLinux(path);
+
+        controller_.setFileName(linuxPath.toStdString());
+
+        logLine("File path saved: " + linuxPath);
     });
     QObject::connect(btnGo_, &QPushButton::clicked, [&]() { controller_.go(); });
     QObject::connect(btnRecord_, &QPushButton::clicked,
@@ -350,4 +376,19 @@ void MainWindow::updateCameraFrame() {
         QPixmap::fromImage(frame).scaled(cameraPreview_->size(),
                                          Qt::KeepAspectRatio,
                                          Qt::SmoothTransformation));
+}
+
+QString MainWindow::convertPathToLinux(const QString& path)
+{
+    QString p = path;
+
+    p.replace("\\", "/");
+
+    if (p.length() > 2 && p[1] == ':')
+    {
+        QChar drive = p[0].toLower();
+        p = "/mnt/" + QString(drive) + p.mid(2);
+    }
+
+    return p;
 }

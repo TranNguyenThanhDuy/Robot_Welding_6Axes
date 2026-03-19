@@ -68,12 +68,24 @@ public:
     void setFileName(const std::string& name);
     std::string FileName() const;
 
+    // Các hàm giao tiếp I/O cơ bản
+    bool setOutputSignal(size_t axisIdx, uint32_t outMask, bool state);
+    bool isInputActive(size_t axisIdx, uint32_t inMask, bool& active);
+
+    // Chức năng theo dõi Endstop
+    void startEndstopMonitor(size_t triggerAxis, uint32_t endstopMask);
+    void stopEndstopMonitor();
+
 private:
     enum class CaptureMode : int {
         FileMode = 0,
         ManualSave = 1,
         AutoRecord = 2
     };
+
+    std::thread endstop_thread_;
+    std::atomic<bool> monitoring_endstop_{false};
+    void endstopThreadFunc(size_t triggerAxis, uint32_t endstopMask);
 
     bool readAxisStatuses(AxisStatuses& statuses);
     bool readActualPositions(AxisPositions& positions);

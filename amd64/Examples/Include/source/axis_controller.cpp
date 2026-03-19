@@ -403,22 +403,20 @@ bool AxisController::getPos(AxisPositions& pos) {
 }
 
 bool AxisController::goWithBuffer(const AxisVectors& paths) {
-
-    if (paths[0].empty()) {
-        std::cout << "Buffer empty." << std::endl;
-        return false;
-    }
+    if (paths[0].empty()) return false;
 
     AxisStatuses statuses{};
-    if (!readAxisStatuses(statuses) || !allServoOn(statuses)) {
-        std::cout << "Servo OFF." << std::endl;
-        return false;
-    }
+    if (!readAxisStatuses(statuses) || !allServoOn(statuses)) return false;
 
     size_t steps = paths[0].size();
+    
+    // --- BẬT MỎ HÀN ---
+    size_t outAxis = 0; 
+    uint32_t outMask = 0x01; // Tương ứng User OUT 0
+    setOutputSignal(outAxis, outMask, true); 
+    std::cout << "Welding Output ON." << std::endl;
 
     for (size_t i = 0; i < steps; ++i) {
-
         AxisPositions target{};
         AxisBools hasCommand{};
 
@@ -428,38 +426,33 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
         }
 
         AxisPositions current{};
-        if (!readActualPositions(current)) return false;
+        if (!readActualPositions(current)) {
+            setOutputSignal(outAxis, outMask, false); // Tắt nếu có lỗi đọc vị trí
+            return false;
+        }
 
-        AxisVelocities velocities =
-            computeVelocities(current, target, hasCommand);
+        AxisVelocities velocities = computeVelocities(current, target, hasCommand);
 
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            FAS_MoveSingleAxisAbsPos(
-                nPortIDs_[a],
-                iSlaveNos_[a],
-                target[a],
-                velocities[a]
-            );
+            FAS_MoveSingleAxisAbsPos(nPortIDs_[a], iSlaveNos_[a], target[a], velocities[a]);
         }
 
         AxisStatuses st{};
         while (true) {
             bool done = true;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
             for (size_t a = 0; a < AXIS_COUNT; ++a) {
-                FAS_GetAxisStatus(
-                    nPortIDs_[a],
-                    iSlaveNos_[a],
-                    &st[a].dwValue
-                );
+                FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &st[a].dwValue);
                 done &= !st[a].FFLAG_MOTIONING;
             }
             if (done) break;
         }
     }
 
-    std::cout << "GO finished." << std::endl;
+    // --- TẮT MỎ HÀN ---
+    setOutputSignal(outAxis, outMask, false); 
+    std::cout << "Welding Output OFF. GO finished." << std::endl;
+
     return true;
 }
 
@@ -528,8 +521,19 @@ bool AxisController::go() {
         return goFromFile(filename_);
     }
     else if (mode == static_cast<int>(CaptureMode::ManualSave)) {
-        std::cout << "GO command is only available in AUTO RECORD or FILE mode." << std::endl;
-        return false;
+        AxisVectors paths;
+        {
+            std::lock_guard<std::mutex> lk(rec_mtx_);
+            paths = saved_positions_;
+        }
+        
+        if (paths[0].empty()) {
+            std::cout << "No manually saved positions to run." << std::endl;
+            return false;
+        }
+
+        std::cout << "Executing Manual Save positions..." << std::endl;
+        return goWithBuffer(paths); 
     }
     AxisVectors paths;
     {
@@ -890,4 +894,57 @@ bool AxisController::loadFileToBuffer(const std::string& filename) {
               << file_buffer_[0].size() << std::endl;
 
     return true;
+}
+
+
+bool AxisController::setOutputSignal(size_t axisIdx, uint32_t outMask, bool state) {
+    if (axisIdx >= AXIS_COUNT) return false;
+    
+    // Thay thế DWORD bằng uint32_t cho môi trường Linux
+    uint32_t dwSetMask = state ? outMask : 0;
+    uint32_t dwClearMask = state ? 0 : outMask;
+    
+    return FAS_SetIOOutput(nPortIDs_[axisIdx], iSlaveNos_[axisIdx], dwSetMask, dwClearMask) == FMM_OK;
+}
+
+bool AxisController::isInputActive(size_t axisIdx, uint32_t inMask, bool& active) {
+    if (axisIdx >= AXIS_COUNT) return false;
+    
+    // Thay thế DWORD bằng uint32_t
+    uint32_t dwInput = 0;
+    
+    if (FAS_GetIOInput(nPortIDs_[axisIdx], iSlaveNos_[axisIdx], &dwInput) == FMM_OK) {
+        active = (dwInput & inMask) != 0;
+        return true;
+    }
+    return false;
+}
+
+void AxisController::endstopThreadFunc(size_t triggerAxis, uint32_t endstopMask) {
+    bool lastState = false;
+    while (monitoring_endstop_.load()) {
+        bool currentState = false;
+        if (isInputActive(triggerAxis, endstopMask, currentState)) {
+            if (currentState && !lastState) { // Bắt cạnh lên (vừa nhấn)
+                std::cout << "[Endstop] Triggered! Auto-saving position..." << std::endl;
+                savePos(); // Gọi hàm lưu vị trí vào saved_positions_
+            }
+            lastState = currentState;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+void AxisController::startEndstopMonitor(size_t triggerAxis, uint32_t endstopMask) {
+    if (monitoring_endstop_.load()) return;
+    monitoring_endstop_.store(true);
+    endstop_thread_ = std::thread(&AxisController::endstopThreadFunc, this, triggerAxis, endstopMask);
+    std::cout << "Endstop Monitor started on Axis " << triggerAxis + 1 << std::endl;
+}
+
+void AxisController::stopEndstopMonitor() {
+    if (monitoring_endstop_.load()) {
+        monitoring_endstop_.store(false);
+        if (endstop_thread_.joinable()) endstop_thread_.join();
+    }
 }

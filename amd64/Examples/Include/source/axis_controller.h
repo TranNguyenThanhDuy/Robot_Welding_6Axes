@@ -76,6 +76,13 @@ public:
     void startEndstopMonitor(size_t triggerAxis, uint32_t endstopMask);
     void stopEndstopMonitor();
 
+    bool writeBufferToFile(const std::string& filename,
+                                       const AxisVectors& data,
+                                       bool append);
+    // void inputToOutputTest();
+    // void monitorAllInputs();
+    // void testAllOutputs();
+
 private:
     enum class CaptureMode : int {
         FileMode = 0,
@@ -107,6 +114,6 @@ private:
     std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::FileMode)};
     std::atomic<bool> recording_{false};
     std::thread rec_thread_{};
-
+    int record_file_index_ = 1;
     std::string filename_;
 };

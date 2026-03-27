@@ -375,6 +375,7 @@ void AxisController::stop() {
         return;
     }
     stopRecordingThread();
+    // --- AUTO SAVE RECORD TO FILE ---
     std::lock_guard<std::mutex> lk(rec_mtx_);
     std::cout << "Recording stopped." << std::endl;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
@@ -388,6 +389,15 @@ void AxisController::stop() {
             std::cout << "]" << std::endl;
         }
     }
+    std::string filename = "record" + std::to_string(record_file_index_) + ".txt";
+    AxisVectors data = recorded_positions_;
+    if (writeBufferToFile(filename, data, false)) {
+        std::cout << "Saved record to " << filename << std::endl;
+        record_file_index_++;
+    } else {
+        std::cout << "Failed to save record file." << std::endl;
+    }
+    
 }
 
 void AxisController::clear() {
@@ -739,6 +749,24 @@ bool AxisController::savePos() {
         if (i + 1 < AXIS_COUNT) std::cout << ", ";
     }
     std::cout << std::endl;
+    // --- APPEND TO savePos.txt ---
+    AxisVectors temp;
+
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        temp[i].push_back(pos[i]);
+    }
+    for (auto& v : temp) v.clear();
+
+    // chỉ ghi 1 điểm (pos hiện tại)
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        temp[i].push_back(pos[i]);
+    }
+
+    if (writeBufferToFile("savePos.txt", temp, true)) {
+        std::cout << "Saved to savePos.txt" << std::endl;
+    } else {
+        std::cout << "Failed to write savePos.txt" << std::endl;
+    }
     return true;
 }
 
@@ -948,3 +976,103 @@ void AxisController::stopEndstopMonitor() {
         if (endstop_thread_.joinable()) endstop_thread_.join();
     }
 }
+
+bool AxisController::writeBufferToFile(const std::string& filename,
+                                       const AxisVectors& data,
+                                       bool append)
+{
+    std::ofstream file;
+
+    if (append)
+        file.open(filename, std::ios::app);
+    else
+        file.open(filename);
+
+    if (!file.is_open()) {
+        std::cout << "Cannot open file: " << filename << std::endl;
+        return false;
+    }
+
+    size_t steps = data[0].size();
+
+    for (size_t i = 0; i < steps; ++i) {
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            file << data[a][i];
+            if (a + 1 < AXIS_COUNT) file << " ";
+        }
+        file << "\n";
+    }
+
+    file.close();
+    return true;
+}
+
+// void AxisController::testAllOutputs() {
+//     std::cout << "=== TEST ALL OUTPUTS ===" << std::endl;
+
+//     for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
+//         std::cout << "Axis " << axis + 1 << std::endl;
+
+//         for (int bit = 0; bit < 16; ++bit) {
+//             uint32_t mask = (1 << bit);
+
+//             std::cout << "  -> OUT bit " << bit << " ON" << std::endl;
+//             setOutputSignal(axis, mask, true);
+//             std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+//             std::cout << "  -> OFF" << std::endl;
+//             setOutputSignal(axis, mask, false);
+//             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+//         }
+//     }
+
+//     std::cout << "=== DONE OUTPUT TEST ===" << std::endl;
+// }
+
+// void AxisController::monitorAllInputs() {
+//     std::cout << "=== MONITOR INPUTS ===" << std::endl;
+
+//     while (true) {
+//         for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
+//             uint32_t dwInput = 0;
+
+//             if (FAS_GetIOInput(nPortIDs_[axis], iSlaveNos_[axis], &dwInput) == FMM_OK) {
+//                 std::cout << "Axis " << axis + 1 << " Input: ";
+
+//                 for (int bit = 0; bit < 16; ++bit) {
+//                     if (dwInput & (1 << bit)) {
+//                         std::cout << "[IN" << bit << "=1] ";
+//                     }
+//                 }
+//                 std::cout << std::endl;
+//             }
+//         }
+
+//         std::this_thread::sleep_for(std::chrono::milliseconds(200));
+//     }
+// }
+
+// void AxisController::inputToOutputTest() {
+//     std::cout << "=== INPUT -> ALL OUTPUT TEST ===" << std::endl;
+
+//     while (true) {
+//         for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
+//             uint32_t input = 0;
+
+//             if (FAS_GetIOInput(nPortIDs_[axis], iSlaveNos_[axis], &input) != FMM_OK)
+//                 continue;
+
+//             if (input != 0) {
+//                 // Nếu có bất kỳ input nào ON → bật toàn bộ output
+//                 FAS_SetIOOutput(nPortIDs_[axis], iSlaveNos_[axis], 0xFFFF, 0x0000);
+//                 std::cout << "Axis " << axis + 1 << ": INPUT DETECTED -> ALL OUTPUT ON" << std::endl;
+//             } else {
+//                 // Không có input → tắt toàn bộ
+//                 FAS_SetIOOutput(nPortIDs_[axis], iSlaveNos_[axis], 0x0000, 0xFFFF);
+//                 std::cout << "Axis " << axis + 1 << ": NO INPUT -> ALL OUTPUT OFF" << std::endl;
+//             }
+//         }
+
+//         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+//     }
+// }

@@ -506,6 +506,7 @@ bool AxisController::goFromFile(const std::string& filename)
             compatiblePaths[i].push_back(row[i]);
         }
     }
+    compatiblePaths = compressBuffer(compatiblePaths, 5, 6);
 
     // Truyền dữ liệu đã chuyển đổi vào hàm thực thi
     return goWithBuffer(compatiblePaths); 

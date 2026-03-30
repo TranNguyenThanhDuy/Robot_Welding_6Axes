@@ -6,6 +6,60 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <array>
+#include <vector>
+
+// ===== GRBL-style planner buffer =====
+constexpr size_t PLANNER_BUFFER_SIZE = 16;
+std::atomic<bool> planner_done{false};
+struct PlannerBlock {
+    AxisPositions target;
+    AxisVelocities velocity;
+};
+
+struct PlannerBuffer {
+    std::mutex mtx;
+    std::array<PlannerBlock, PLANNER_BUFFER_SIZE> buffer;
+    size_t head = 0;
+    size_t tail = 0;
+
+    bool isFullUnsafe() const {
+        return ((head + 1) % PLANNER_BUFFER_SIZE) == tail;
+    }
+
+    bool isEmptyUnsafe() const {
+        return head == tail;
+    }
+
+    bool push(const PlannerBlock& b) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (isFullUnsafe()) return false;
+        buffer[head] = b;
+        head = (head + 1) % PLANNER_BUFFER_SIZE;
+        return true;
+    }
+
+    bool pop(PlannerBlock& b) {
+        std::lock_guard<std::mutex> lk(mtx);
+        if (isEmptyUnsafe()) return false;
+        b = buffer[tail];
+        tail = (tail + 1) % PLANNER_BUFFER_SIZE;
+        return true;
+    }
+
+    bool isEmpty() {
+        std::lock_guard<std::mutex> lk(mtx);
+        return isEmptyUnsafe();
+    }
+};
+
+static PlannerBuffer planner;
+static std::thread motion_thread;
+static std::atomic<bool> motion_running{false};
+
 
 AxisController::AxisController() {
     int portDefaults[6] = {0, 0, 0, 0, 0, 0};
@@ -18,6 +72,10 @@ AxisController::AxisController() {
 
 AxisController::~AxisController() {
     stopRecordingThread();
+
+    motion_running.store(false);
+    if (motion_thread.joinable()) motion_thread.join();
+
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         FAS_Close(nPortIDs_[i]);
     }
@@ -26,7 +84,7 @@ AxisController::~AxisController() {
 constexpr size_t MAX_BUFFERS = 8;
 // AxisVectors recorded_positions;
 std::mutex rec_mtx;
-std::atomic<bool> recording{false};
+// std::atomic<bool> recording{false};
 std::thread rec_thread;
 
 std::string AxisController::axisName(size_t idx) const {
@@ -412,59 +470,78 @@ bool AxisController::getPos(AxisPositions& pos) {
     return readActualPositions(pos);
 }
 
-bool AxisController::goWithBuffer(const AxisVectors& paths) {
-    if (paths[0].empty()) return false;
+bool AxisController::goWithBuffer(const AxisVectors& paths)
+{
+   if (paths[0].empty()) return false;
+
+    // ✅ RESET trạng thái trước khi chạy
+    planner_done.store(false);
+
+    motion_running.store(false);
+    if (motion_thread.joinable())
+        motion_thread.join();
 
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses) || !allServoOn(statuses)) return false;
 
-    size_t steps = paths[0].size();
-    
-    // --- BẬT MỎ HÀN ---
-    size_t outAxis = 0; 
-    uint32_t outMask = 0x01; // Tương ứng User OUT 0
-    setOutputSignal(outAxis, outMask, true); 
-    std::cout << "Welding Output ON." << std::endl;
+    // bật output
+    size_t outAxis = 0;
+    uint32_t outMask = 0x01;
+    setOutputSignal(outAxis, outMask, true);
+    {
+        std::lock_guard<std::mutex> lk(planner.mtx);
+        planner.head = 0;
+        planner.tail = 0;
+    }
+    planner_done.store(false);
 
-    for (size_t i = 0; i < steps; ++i) {
-        AxisPositions target{};
-        AxisBools hasCommand{};
+    // ===== GRBL planner =====
+    motion_running.store(true);
+
+    std::thread planner_thread([this, paths]() {
+        fillPlannerBuffer(paths);
+    });
+
+    motion_thread = std::thread(&AxisController::motionThreadFunc, this);
+    // đợi chạy xong
+    // wait motor finish
+    bool done = false;
+
+    while (true) {
+        bool idle = planner.isEmpty();
+        bool plannerFinished = planner_done.load();
+
+        AxisStatuses statuses{};
+        bool moving = false;
 
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            target[a] = paths[a][i];
-            hasCommand[a] = true;
-        }
-
-        AxisPositions current{};
-        if (!readActualPositions(current)) {
-            setOutputSignal(outAxis, outMask, false); // Tắt nếu có lỗi đọc vị trí
-            return false;
-        }
-
-        AxisVelocities velocities = computeVelocities(current, target, hasCommand);
-
-        for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            FAS_MoveSingleAxisAbsPos(nPortIDs_[a], iSlaveNos_[a], target[a], velocities[a]);
-        }
-
-        AxisStatuses st{};
-        while (true) {
-            bool done = true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            for (size_t a = 0; a < AXIS_COUNT; ++a) {
-                FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &st[a].dwValue);
-                done &= !st[a].FFLAG_MOTIONING;
+            if (FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &(statuses[a].dwValue)) == FMM_OK) {
+                if (statuses[a].FFLAG_MOTIONING) {
+                    moving = true;
+                }
             }
-            if (done) break;
         }
+
+        // ✅ FIX CHÍNH Ở ĐÂY
+        if (plannerFinished && idle && !moving) break;
+
+        if (!motion_running.load()) break;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
-    // --- TẮT MỎ HÀN ---
-    setOutputSignal(outAxis, outMask, false); 
-    std::cout << "Welding Output OFF. GO finished." << std::endl;
+    motion_running.store(false);
+    if (motion_thread.joinable()) motion_thread.join();
 
+    // tắt output
+    setOutputSignal(outAxis, outMask, false);
+
+    std::cout << "GO (GRBL-style) finished." << std::endl;
+    if (planner_thread.joinable()) planner_thread.join();
     return true;
+    
 }
+
 
 bool AxisController::goFromFile(const std::string& filename)
 {
@@ -500,14 +577,13 @@ bool AxisController::goFromFile(const std::string& filename)
     }
 
     // --- PHẦN BẠN ĐANG THIẾU: Chuyển đổi và gọi hàm ---
-    AxisVectors compatiblePaths;
+    AxisVectors compatiblePaths{};
     for (const auto& row : pathBuffer) {
         for (size_t i = 0; i < AXIS_COUNT; i++) {
             compatiblePaths[i].push_back(row[i]);
         }
     }
     compatiblePaths = compressBuffer(compatiblePaths, 5, 6);
-
     // Truyền dữ liệu đã chuyển đổi vào hàm thực thi
     return goWithBuffer(compatiblePaths); 
 }
@@ -756,12 +832,11 @@ bool AxisController::savePos() {
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         temp[i].push_back(pos[i]);
     }
-    for (auto& v : temp) v.clear();
 
-    // chỉ ghi 1 điểm (pos hiện tại)
-    for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        temp[i].push_back(pos[i]);
-    }
+    // // chỉ ghi 1 điểm (pos hiện tại)
+    // for (size_t i = 0; i < AXIS_COUNT; ++i) {
+    //     temp[i].push_back(pos[i]);
+    // }
 
     if (writeBufferToFile("savePos.txt", temp, true)) {
         std::cout << "Saved to savePos.txt" << std::endl;
@@ -1007,6 +1082,90 @@ bool AxisController::writeBufferToFile(const std::string& filename,
     file.close();
     return true;
 }
+
+void AxisController::fillPlannerBuffer(const AxisVectors& paths)
+{
+    AxisPositions current{};
+    readActualPositions(current);
+
+    for (size_t i = 0; i < paths[0].size(); ++i) {
+        while (true) {
+            if (!motion_running.load()) return;
+
+            {
+                std::lock_guard<std::mutex> lk(planner.mtx);
+                if (!planner.isFullUnsafe()) break;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        PlannerBlock block;
+        AxisBools hasCommand{};
+
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            block.target[a] = paths[a][i];
+            hasCommand[a] = true;
+        }
+
+        block.velocity = computeVelocities(current, block.target, hasCommand);
+        current = block.target;
+
+        planner.push(block);
+    }
+
+    planner_done.store(true); // ✅ thêm dòng này
+}
+
+void AxisController::motionThreadFunc()
+{
+    PlannerBlock block;
+
+    while (motion_running.load()) {
+
+        if (!planner.pop(block)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        // gửi lệnh
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            FAS_MoveSingleAxisAbsPos(
+                nPortIDs_[a],
+                iSlaveNos_[a],
+                block.target[a],
+                block.velocity[a]
+            );
+        }
+
+        // chờ NGẮN (giống GRBL polling nhẹ)
+        AxisStatuses statuses{};
+        bool done = false;
+
+        auto start = std::chrono::steady_clock::now();
+
+        while (!done && motion_running.load()) {
+            done = true;
+
+            for (size_t a = 0; a < AXIS_COUNT; ++a) {
+                if (FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &(statuses[a].dwValue)) == FMM_OK) {
+                    if (statuses[a].FFLAG_MOTIONING) {
+                        done = false;
+                    }
+                }
+            }
+
+            // ⛔ timeout 5s tránh treo
+            if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
+                std::cout << "Motion timeout!" << std::endl;
+                break;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+}
+
 
 // void AxisController::testAllOutputs() {
 //     std::cout << "=== TEST ALL OUTPUTS ===" << std::endl;

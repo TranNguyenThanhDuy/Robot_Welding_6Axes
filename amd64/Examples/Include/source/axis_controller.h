@@ -89,6 +89,8 @@ private:
         ManualSave = 1,
         AutoRecord = 2
     };
+    void fillPlannerBuffer(const AxisVectors& paths);
+    void motionThreadFunc();
 
     std::thread endstop_thread_;
     std::atomic<bool> monitoring_endstop_{false};

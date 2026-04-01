@@ -32,7 +32,7 @@ using AxisPorts = std::array<int, AXIS_COUNT>;
 using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
 using AxisPositions = std::array<int, AXIS_COUNT>;
 using AxisStatuses = std::array<EZISERVO_AXISSTATUS, AXIS_COUNT>;
-using AxisVelocities = std::array<unsigned int, AXIS_COUNT>;
+using AxisVelocities = std::array<int, AXIS_COUNT>;
 using AxisVectors = std::array<std::vector<int>, AXIS_COUNT>;
 using AxisBools = std::array<bool, AXIS_COUNT>;
 
@@ -76,9 +76,9 @@ public:
     void startEndstopMonitor(size_t triggerAxis, uint32_t endstopMask);
     void stopEndstopMonitor();
 
-    bool writeBufferToFile(const std::string& filename,
-                                       const AxisVectors& data,
-                                       bool append);
+    bool writeBufferToFile(const std::string& filename,const AxisVectors& data,bool append);
+    bool readActualVelocities(AxisVelocities& velocities);
+    bool writeRpmToFile(const std::string& filename, const AxisVectors& velocityData);
     // void inputToOutputTest();
     // void monitorAllInputs();
     // void testAllOutputs();
@@ -116,4 +116,11 @@ private:
     std::thread rec_thread_{};
     int record_file_index_ = 1;
     std::string filename_;
+    AxisVectors recorded_velocities_;
+
+    std::array<std::vector<double>, AXIS_COUNT> recorded_rpms_; 
+    std::array<double, AXIS_COUNT> gear_ratios_;
+    
+    // Độ phân giải encoder (xung/vòng). Thay đổi nếu driver của bạn set khác 10000
+    int ppr_ = 10000;
 };

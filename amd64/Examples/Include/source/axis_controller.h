@@ -120,7 +120,7 @@ private:
 
     std::array<std::vector<double>, AXIS_COUNT> recorded_rpms_; 
     std::array<double, AXIS_COUNT> gear_ratios_;
-    
+    void saveRpmFromPositions(const std::string& filename, const AxisVectors& positions);
     // Độ phân giải encoder (xung/vòng). Thay đổi nếu driver của bạn set khác 10000
     int ppr_ = 10000;
 };

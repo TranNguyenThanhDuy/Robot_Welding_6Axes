@@ -524,6 +524,8 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
     // --- TẮT MỎ HÀN ---
     setOutputSignal(outAxis, outMask, false); 
     std::cout << "Welding Output OFF. GO finished." << std::endl;
+    std::string autoRpmFile = "run_rpm_log.txt"; 
+    saveRpmFromPositions(autoRpmFile, paths);
 
     return true;
 }
@@ -1070,6 +1072,35 @@ bool AxisController::writeBufferToFile(const std::string& filename,
     return true;
 }
 
+void AxisController::saveRpmFromPositions(const std::string& filename, const AxisVectors& positions) {
+    if (positions.empty() || positions[0].size() < 2) return;
+
+    std::ofstream file(filename);
+    if (!file.is_open()) return;
+
+    size_t steps = positions[0].size();
+    // Giả định thời gian giữa các bước (sample rate) là RECORD_PERIOD_MS (10ms)
+    // Nếu trong goWithBuffer bạn dùng delay khác, bạn có thể điều chỉnh hằng số này
+    constexpr double dt = 0.01; // 10ms = 0.01s
+
+    for (size_t i = 1; i < steps; ++i) {
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            long deltaPos = positions[a][i] - positions[a][i-1];
+            double pps = std::abs(deltaPos) / dt;
+            
+            double current_ppr = (ppr_ > 0) ? ppr_ : 10000.0;
+            double current_ratio = (gear_ratios_[a] > 0.0) ? gear_ratios_[a] : 1.0;
+            
+            double rpm = (pps / current_ppr) * 60.0 / current_ratio;
+            
+            file << std::fixed << std::setprecision(2) << rpm;
+            if (a + 1 < AXIS_COUNT) file << " ";
+        }
+        file << "\n";
+    }
+    file.close();
+    std::cout << "RPM log saved to: " << filename << std::endl;
+}
 
 bool AxisController::writeRpmToFile(const std::string& filename, const AxisVectors& ppsData) {
     std::ofstream file(filename);

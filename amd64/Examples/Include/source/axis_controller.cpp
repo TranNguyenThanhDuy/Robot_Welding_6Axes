@@ -524,8 +524,6 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
     // --- TẮT MỎ HÀN ---
     setOutputSignal(outAxis, outMask, false); 
     std::cout << "Welding Output OFF. GO finished." << std::endl;
-    std::string autoRpmFile = "run_rpm_log.txt"; 
-    saveRpmFromPositions(autoRpmFile, paths);
 
     return true;
 }
@@ -570,6 +568,14 @@ bool AxisController::goFromFile(const std::string& filename)
             compatiblePaths[i].push_back(row[i]);
         }
     }
+    std::string rpmFile = "rpm_" + std::to_string(record_file_index_) + ".txt";
+
+    saveRpmFromPositions(rpmFile, compatiblePaths); // Hàm này sẽ tính toán RPM từ positions và lưu vào file
+
+    std::cout << "Saved RPM to " << rpmFile << std::endl;
+
+    record_file_index_++;
+
     compatiblePaths = compressBuffer(compatiblePaths, 5, 6);
 
     // Truyền dữ liệu đã chuyển đổi vào hàm thực thi

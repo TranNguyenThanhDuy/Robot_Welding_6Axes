@@ -479,7 +479,7 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
 
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses) || !allServoOn(statuses)) return false;
-
+    paths = compressBuffer(paths, 5, 6);
     size_t steps = paths[0].size();
     
     // --- BẬT MỎ HÀN ---
@@ -575,9 +575,6 @@ bool AxisController::goFromFile(const std::string& filename)
     std::cout << "Saved RPM to " << rpmFile << std::endl;
 
     record_file_index_++;
-
-    compatiblePaths = compressBuffer(compatiblePaths, 5, 6);
-
     // Truyền dữ liệu đã chuyển đổi vào hàm thực thi
     return goWithBuffer(compatiblePaths); 
 }
@@ -621,9 +618,6 @@ bool AxisController::go() {
         std::lock_guard<std::mutex> lk(rec_mtx_);
         paths = recorded_positions_;
     }
-
-    paths = compressBuffer(paths, 5, 6);
-
     return goWithBuffer(paths);
 }
 

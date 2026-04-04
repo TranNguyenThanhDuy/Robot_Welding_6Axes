@@ -98,6 +98,8 @@ private:
         ManualSave = 1,
         AutoRecord = 2
     };
+    void fillPlannerBuffer(const AxisVectors& paths);
+    void motionThreadFunc();
 
     // ===== PLANNER BUFFER =====
 

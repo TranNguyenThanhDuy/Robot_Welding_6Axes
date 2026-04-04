@@ -15,8 +15,8 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVBoxLayout>
-
-#include <QLineEdit>//để điền link
+#include <QFileDialog> // Thư viện mở cửa sổ chọn file
+#include <thread>
 
 #include <opencv2/core/mat.hpp>
 
@@ -116,7 +116,7 @@ void MainWindow::buildUi() {
 
     auto* motionButtons = new QHBoxLayout();
     btnMove_ = new QPushButton("MovePos");
-    btnGo_ = new QPushButton("Go (Recorded)");
+    btnGo_ = new QPushButton("Go (Recorded/File)");
     btnModeToggle_ = new QPushButton("Mode: AUTO RECORD");
     btnModeToggle_->setCheckable(true);
     btnRecord_ = new QPushButton("Record");
@@ -138,9 +138,13 @@ void MainWindow::buildUi() {
 
     filePathEdit_ = new QLineEdit();
     filePathEdit_->setPlaceholderText("Enter file path...");
+    
+    // Giao diện chọn file
+    btnBrowseFile_ = new QPushButton("Browse...");
 
     fileLayout->addWidget(new QLabel("Path:"));
     fileLayout->addWidget(filePathEdit_);
+    fileLayout->addWidget(btnBrowseFile_);
 
     root->addWidget(fileBox);
 
@@ -183,7 +187,7 @@ void MainWindow::connectSignals() {
     QObject::connect(btnOff_, &QPushButton::clicked,
                      [&]() { controller_.servoOff(); });
     QObject::connect(btnHome_, &QPushButton::clicked,
-                     [&]() { controller_.home(); });
+                     [&]() { std::thread([this]() { controller_.home(); }).detach(); });
     QObject::connect(btnSetPos_, &QPushButton::clicked,
                      [&]() { controller_.setOriginPos(); });
     QObject::connect(btnGetPos_, &QPushButton::clicked, [&]() {
@@ -203,13 +207,17 @@ void MainWindow::connectSignals() {
         }
         logLine("Current positions - " + parts.join(", "));
     });
+
     QObject::connect(btnMove_, &QPushButton::clicked, [&]() {
         AxisPositions targets{};
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        for (size_t i = 0; i < AXIS_COUNT; ++i)
             targets[i] = axisInputs_[i]->value();
-        }
-        controller_.movePos(targets);
+
+        std::thread([=]() {
+            controller_.movePos(targets);
+        }).detach();
     });
+    
     QObject::connect(btnModeToggle_, &QPushButton::clicked, [&]() {
         if (controller_.isSaveMode()) {
             controller_.setModeRecord();
@@ -218,28 +226,58 @@ void MainWindow::connectSignals() {
         else if (controller_.isFileMode()) {
             controller_.setModeSave();
             btnModeToggle_->setText("Mode: MANUAL SAVE");
-
         } 
         else {
             controller_.setModeFile();
             btnModeToggle_->setText("Mode: File");
         }
-
     });
+
+    // Xử lý khi người dùng tự gõ tay hoặc dán link vào ô LineEdit rồi ấn Enter
     QObject::connect(filePathEdit_, &QLineEdit::editingFinished, [&]() {
-
         QString path = filePathEdit_->text();
-
         if (path.isEmpty())
             return;
 
         QString linuxPath = convertPathToLinux(path);
-
         controller_.setFileName(linuxPath.toStdString());
-
         logLine("File path saved: " + linuxPath);
     });
-    QObject::connect(btnGo_, &QPushButton::clicked, [&]() { controller_.go(); });
+
+    // Xử lý khi bấm nút Browse (Chọn File)
+    QObject::connect(btnBrowseFile_, &QPushButton::clicked, [this]() {
+        // Tự động nhảy vào ổ C của Windows
+        QString startPath = QDir::currentPath();
+        if (QDir("/mnt/c/Users/").exists()) {
+            startPath = "/mnt/c/Users/";
+        }
+
+        QString filePath = QFileDialog::getOpenFileName(
+            this, 
+            "Chọn file toạ độ (Trajectory File)", 
+            startPath, 
+            "Text Files (*.txt);;All Files (*)"
+        );
+
+        if (!filePath.isEmpty()) {
+            QString linuxPath = convertPathToLinux(filePath);
+            filePathEdit_->setText(linuxPath); // Cập nhật lên ô text
+            controller_.setFileName(linuxPath.toStdString()); // Gửi xuống hệ thống
+            logLine("Đã tải thành công file: " + linuxPath);
+        }
+    });
+
+    // Cập nhật tính năng Auto-Update trên nút "Go"
+    QObject::connect(btnGo_, &QPushButton::clicked, [this]() { 
+        // Lấy lại text mới nhất đề phòng người dùng copy dán nhưng chưa ấn Enter
+        QString path = filePathEdit_->text();
+        if (!path.isEmpty()) {
+            QString linuxPath = convertPathToLinux(path);
+            controller_.setFileName(linuxPath.toStdString());
+        }
+        std::thread([this]() { controller_.go(); }).detach(); 
+    });
+
     QObject::connect(btnRecord_, &QPushButton::clicked,
                      [&]() { controller_.record(); });
     QObject::connect(btnSavePos_, &QPushButton::clicked,

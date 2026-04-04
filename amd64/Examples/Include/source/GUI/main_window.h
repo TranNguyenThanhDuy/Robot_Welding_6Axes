@@ -53,6 +53,7 @@ private:
     QPushButton* btnCamStop_ = nullptr;
     QLineEdit* filePathEdit_;
     QString convertPathToLinux(const QString& path);
+    QPushButton* btnBrowseFile_ = nullptr;
 
     std::unique_ptr<StreamRedirect> coutRedirect_;
     std::unique_ptr<StreamRedirect> cerrRedirect_;

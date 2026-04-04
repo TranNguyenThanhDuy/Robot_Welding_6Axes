@@ -8,7 +8,7 @@
 #include <string>
 #include <thread>
 #include <vector>
-
+#include <deque>
 // ------------------------------------------------------------
 // Axis selection
 // Define exactly one of AXIS_1, AXIS_2, AXIS_5, AXIS_6
@@ -38,6 +38,11 @@ using AxisBools = std::array<bool, AXIS_COUNT>;
 
 class AxisController {
 public:
+    struct PlannerBlock {
+        AxisPositions target;
+        AxisVelocities velocity;
+        double duration;
+    };
     AxisController();
     ~AxisController();
 
@@ -77,18 +82,31 @@ public:
     void stopEndstopMonitor();
 
     bool writeBufferToFile(const std::string& filename,const AxisVectors& data,bool append);
-    bool readActualVelocities(AxisVelocities& velocities);
-    bool writeRpmToFile(const std::string& filename, const AxisVectors& velocityData);
     // void inputToOutputTest();
     // void monitorAllInputs();
     // void testAllOutputs();
-
+    void executeBlock(const PlannerBlock& block);
+    void plannerThreadFunc();
+    void startPlannerThread();
+    void stopPlannerThread();
+    AxisVelocities rampVelocity(const AxisVelocities& last, const AxisVelocities& target) const;
+    void startPlanner();
+    void stopPlanner();
 private:
     enum class CaptureMode : int {
         FileMode = 0,
         ManualSave = 1,
         AutoRecord = 2
     };
+
+    // ===== PLANNER BUFFER =====
+
+    std::deque<PlannerBlock> plannerBuffer_;
+    std::mutex planner_mtx_;
+    std::thread planner_thread_;
+    std::atomic<bool> planner_running_{false};
+
+    static constexpr size_t PLANNER_BUFFER_SIZE = 16;
 
     std::thread endstop_thread_;
     std::atomic<bool> monitoring_endstop_{false};
@@ -118,9 +136,12 @@ private:
     std::string filename_;
     AxisVectors recorded_velocities_;
 
-    std::array<std::vector<double>, AXIS_COUNT> recorded_rpms_; 
     std::array<double, AXIS_COUNT> gear_ratios_;
-    void saveRpmFromPositions(const std::string& filename, const AxisVectors& positions);
     // Độ phân giải encoder (xung/vòng). Thay đổi nếu driver của bạn set khác 10000
     int ppr_ = 10000;
+    // Thêm định nghĩa kiểu nếu chưa có
+// using AxisVelocities = std::array<unsigned int, AXIS_COUNT>;
+    bool readActualVelocities(AxisVelocities& velocities);
+    AxisPositions lastTarget;
+    int rampVelocity(int last, int target) const;
 };

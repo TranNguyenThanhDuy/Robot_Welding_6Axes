@@ -15,6 +15,8 @@ namespace {
 constexpr std::size_t kAxisCount = 6;
 constexpr unsigned int kBaseVelocity = 20000;
 constexpr unsigned int kMinVelocity = 50;
+constexpr unsigned short kDefaultAccelTime = 100;
+constexpr unsigned short kDefaultDecelTime = 100;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegToRad = kPi / 180.0;
 constexpr double kRadToDeg = 180.0 / kPi;
@@ -463,8 +465,7 @@ public:
 
         for (std::size_t i = 0; i < kAxisCount; ++i) {
             if (!hasCommand[i]) continue;
-            if (FAS_MoveSingleAxisAbsPos(portIds_[i], slaveNos_[i], targetEncoders[i],
-                                         velocities[i]) != FMM_OK) {
+            if (!moveSingleAxisAbsPosProfiled(i, targetEncoders[i], velocities[i])) {
                 std::cout << "Move command failed on axis " << (i + 1) << std::endl;
                 return false;
             }
@@ -490,6 +491,23 @@ public:
     }
 
 private:
+    bool moveSingleAxisAbsPosProfiled(std::size_t axisIndex,
+                                      int targetEncoder,
+                                      unsigned int velocity) const {
+        MOTION_OPTION_EX motionOption {};
+        motionOption.flagOption.dwOptionFlag = 0;
+        motionOption.flagOption.BIT_USE_CUSTOMACCEL = 1;
+        motionOption.flagOption.BIT_USE_CUSTOMDECEL = 1;
+        motionOption.wCustomAccelTime = kDefaultAccelTime;
+        motionOption.wCustomDecelTime = kDefaultDecelTime;
+
+        return FAS_MoveSingleAxisAbsPosEx(portIds_[axisIndex],
+                                          slaveNos_[axisIndex],
+                                          targetEncoder,
+                                          velocity,
+                                          &motionOption) == FMM_OK;
+    }
+
     bool setServoState(bool on) const {
         bool allOk = true;
         for (std::size_t i = 0; i < kAxisCount; ++i) {

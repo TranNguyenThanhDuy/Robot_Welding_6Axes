@@ -27,6 +27,8 @@ constexpr size_t AXIS_COUNT = 6;
 
 constexpr unsigned int base_velocity = 20000;
 constexpr unsigned int min_velocity = 10;
+constexpr unsigned short default_accel_time = 100;
+constexpr unsigned short default_decel_time = 100;
 
 using AxisPorts = std::array<int, AXIS_COUNT>;
 using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
@@ -77,6 +79,9 @@ private:
 
     bool readAxisStatuses(AxisStatuses& statuses);
     bool readActualPositions(AxisPositions& positions);
+    bool moveSingleAxisAbsPosProfiled(size_t axisIndex,
+                                      int targetPosition,
+                                      unsigned int velocity) const;
     AxisVelocities computeVelocities(const AxisPositions& current,
                                      const AxisPositions& targets,
                                      const AxisBools& hasCommand) const;

@@ -133,6 +133,23 @@ bool AxisController::readActualPositions(AxisPositions& positions) {
     return true;
 }
 
+bool AxisController::moveSingleAxisAbsPosProfiled(size_t axisIndex,
+                                                  int targetPosition,
+                                                  unsigned int velocity) const {
+    MOTION_OPTION_EX motionOption {};
+    motionOption.flagOption.dwOptionFlag = 0;
+    motionOption.flagOption.BIT_USE_CUSTOMACCEL = 1;
+    motionOption.flagOption.BIT_USE_CUSTOMDECEL = 1;
+    motionOption.wCustomAccelTime = default_accel_time;
+    motionOption.wCustomDecelTime = default_decel_time;
+
+    return FAS_MoveSingleAxisAbsPosEx(nPortIDs_[axisIndex],
+                                      iSlaveNos_[axisIndex],
+                                      targetPosition,
+                                      velocity,
+                                      &motionOption) == FMM_OK;
+}
+
 AxisVelocities AxisController::computeVelocities(const AxisPositions& current,
                                                  const AxisPositions& targets,
                                                  const AxisBools& hasCommand) const {
@@ -278,7 +295,7 @@ bool AxisController::home() {
 
     std::cout << "Sending homing commands to all motors..." << std::endl;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (FAS_MoveSingleAxisAbsPos(nPortIDs_[i], iSlaveNos_[i], 0, base_velocity) != FMM_OK) {
+        if (!moveSingleAxisAbsPosProfiled(i, 0, base_velocity)) {
             std::cout << axisName(i) << " homing command failed." << std::endl;
             return false;
         }
@@ -434,12 +451,10 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
             computeVelocities(current, target, hasCommand);
 
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            FAS_MoveSingleAxisAbsPos(
-                nPortIDs_[a],
-                iSlaveNos_[a],
-                target[a],
-                velocities[a]
-            );
+            if (!moveSingleAxisAbsPosProfiled(a, target[a], velocities[a])) {
+                std::cout << axisName(a) << " move command failed." << std::endl;
+                return false;
+            }
         }
 
         AxisStatuses st{};
@@ -569,8 +584,7 @@ bool AxisController::movePos(const AxisPositions& targets) {
 
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         if (!hasCommand[i]) continue;
-        if (FAS_MoveSingleAxisAbsPos(nPortIDs_[i], iSlaveNos_[i], targets[i], velocities[i]) !=
-            FMM_OK) {
+        if (!moveSingleAxisAbsPosProfiled(i, targets[i], velocities[i])) {
             std::cout << axisName(i) << " move command failed." << std::endl;
             return false;
         }
@@ -672,8 +686,7 @@ bool AxisController::goPos() {
 
         for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
             if (!hasCommand[axis]) continue;
-            if (FAS_MoveSingleAxisAbsPos(nPortIDs_[axis], iSlaveNos_[axis], targets[axis],
-                                         velocities[axis]) != FMM_OK) {
+            if (!moveSingleAxisAbsPosProfiled(axis, targets[axis], velocities[axis])) {
                 std::cout << axisName(axis) << " move to " << targets[axis] << " failed."
                           << std::endl;
                 return false;

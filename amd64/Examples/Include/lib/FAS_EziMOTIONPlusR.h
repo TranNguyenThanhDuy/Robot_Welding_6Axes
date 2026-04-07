@@ -161,7 +161,6 @@ extern "C"
 
 	 int 	FAS_PosTableReadOneItem(unsigned char nPortID, unsigned char iSlaveNo, unsigned short wItemNo, unsigned short wOffset, int* lPosItemVal);
 	 int 	FAS_PosTableWriteOneItem(unsigned char nPortID, unsigned char iSlaveNo, unsigned short wItemNo, unsigned short wOffset, int lPosItemVal);
-
 	 int 	FAS_PosTableSingleRunItem(unsigned char nPortID, unsigned char iSlaveNo, int bNextMove, unsigned short wItemNo);
 
 	//------------------------------------------------------------------

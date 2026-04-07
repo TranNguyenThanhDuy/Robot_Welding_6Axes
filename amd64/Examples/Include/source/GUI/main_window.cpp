@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFont>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -114,6 +115,29 @@ void MainWindow::buildUi() {
     }
     motionLayout->addLayout(axisRow);
 
+    auto* profileBox = new QGroupBox("Motion Profile");
+    auto* profileLayout = new QFormLayout(profileBox);
+    baseVelocityInput_ = new QSpinBox();
+    minVelocityInput_ = new QSpinBox();
+    accelTimeInput_ = new QSpinBox();
+    decelTimeInput_ = new QSpinBox();
+
+    baseVelocityInput_->setRange(1, 1000000);
+    minVelocityInput_->setRange(1, 1000000);
+    accelTimeInput_->setRange(1, 65535);
+    decelTimeInput_->setRange(1, 65535);
+
+    baseVelocityInput_->setValue(static_cast<int>(controller_.baseVelocity()));
+    minVelocityInput_->setValue(static_cast<int>(controller_.minVelocity()));
+    accelTimeInput_->setValue(static_cast<int>(controller_.accelTime()));
+    decelTimeInput_->setValue(static_cast<int>(controller_.decelTime()));
+
+    profileLayout->addRow("Base velocity", baseVelocityInput_);
+    profileLayout->addRow("Min velocity", minVelocityInput_);
+    profileLayout->addRow("Accel time", accelTimeInput_);
+    profileLayout->addRow("Decel time", decelTimeInput_);
+    motionLayout->addWidget(profileBox);
+
     auto* motionButtons = new QHBoxLayout();
     btnMove_ = new QPushButton("MovePos");
     btnGo_ = new QPushButton("Go (Recorded)");
@@ -209,6 +233,22 @@ void MainWindow::connectSignals() {
             targets[i] = axisInputs_[i]->value();
         }
         controller_.movePos(targets);
+    });
+    QObject::connect(baseVelocityInput_, qOverload<int>(&QSpinBox::valueChanged), [&](int value) {
+        controller_.setBaseVelocity(static_cast<unsigned int>(value));
+        logLine(QString("Base velocity set to %1").arg(value));
+    });
+    QObject::connect(minVelocityInput_, qOverload<int>(&QSpinBox::valueChanged), [&](int value) {
+        controller_.setMinVelocity(static_cast<unsigned int>(value));
+        logLine(QString("Min velocity set to %1").arg(value));
+    });
+    QObject::connect(accelTimeInput_, qOverload<int>(&QSpinBox::valueChanged), [&](int value) {
+        controller_.setAccelTime(static_cast<unsigned short>(value));
+        logLine(QString("Accel time set to %1").arg(value));
+    });
+    QObject::connect(decelTimeInput_, qOverload<int>(&QSpinBox::valueChanged), [&](int value) {
+        controller_.setDecelTime(static_cast<unsigned short>(value));
+        logLine(QString("Decel time set to %1").arg(value));
     });
     QObject::connect(btnModeToggle_, &QPushButton::clicked, [&]() {
         if (controller_.isSaveMode()) {

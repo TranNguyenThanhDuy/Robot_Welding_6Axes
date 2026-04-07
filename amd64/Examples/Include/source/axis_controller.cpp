@@ -133,6 +133,38 @@ bool AxisController::readActualPositions(AxisPositions& positions) {
     return true;
 }
 
+void AxisController::setBaseVelocity(unsigned int value) {
+    base_velocity_ = std::max(1u, value);
+}
+
+void AxisController::setMinVelocity(unsigned int value) {
+    min_velocity_ = std::max(1u, value);
+}
+
+void AxisController::setAccelTime(unsigned short value) {
+    accel_time_ = std::max<unsigned short>(1, value);
+}
+
+void AxisController::setDecelTime(unsigned short value) {
+    decel_time_ = std::max<unsigned short>(1, value);
+}
+
+unsigned int AxisController::baseVelocity() const {
+    return base_velocity_;
+}
+
+unsigned int AxisController::minVelocity() const {
+    return min_velocity_;
+}
+
+unsigned short AxisController::accelTime() const {
+    return accel_time_;
+}
+
+unsigned short AxisController::decelTime() const {
+    return decel_time_;
+}
+
 bool AxisController::moveSingleAxisAbsPosProfiled(size_t axisIndex,
                                                   int targetPosition,
                                                   unsigned int velocity) const {
@@ -140,8 +172,8 @@ bool AxisController::moveSingleAxisAbsPosProfiled(size_t axisIndex,
     motionOption.flagOption.dwOptionFlag = 0;
     motionOption.flagOption.BIT_USE_CUSTOMACCEL = 1;
     motionOption.flagOption.BIT_USE_CUSTOMDECEL = 1;
-    motionOption.wCustomAccelTime = default_accel_time;
-    motionOption.wCustomDecelTime = default_decel_time;
+    motionOption.wCustomAccelTime = accel_time_;
+    motionOption.wCustomDecelTime = decel_time_;
 
     return FAS_MoveSingleAxisAbsPosEx(nPortIDs_[axisIndex],
                                       iSlaveNos_[axisIndex],
@@ -154,7 +186,7 @@ AxisVelocities AxisController::computeVelocities(const AxisPositions& current,
                                                  const AxisPositions& targets,
                                                  const AxisBools& hasCommand) const {
     AxisVelocities velocities{};
-    velocities.fill(base_velocity);
+    velocities.fill(base_velocity_);
 
     int maxDistance = 0;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
@@ -169,8 +201,8 @@ AxisVelocities AxisController::computeVelocities(const AxisPositions& current,
             int distance = std::abs(targets[i] - current[i]);
             if (distance > 0) {
                 auto scaled = static_cast<unsigned int>(
-                    (static_cast<long long>(distance) * base_velocity) / maxDistance);
-                velocities[i] = std::max(min_velocity, scaled);
+                    (static_cast<long long>(distance) * base_velocity_) / maxDistance);
+                velocities[i] = std::max(min_velocity_, scaled);
             }
         }
     }
@@ -295,7 +327,7 @@ bool AxisController::home() {
 
     std::cout << "Sending homing commands to all motors..." << std::endl;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
-        if (!moveSingleAxisAbsPosProfiled(i, 0, base_velocity)) {
+        if (!moveSingleAxisAbsPosProfiled(i, 0, base_velocity_)) {
             std::cout << axisName(i) << " homing command failed." << std::endl;
             return false;
         }
@@ -673,13 +705,13 @@ bool AxisController::goPos() {
         AxisBools hasCommand{};
         AxisPositions targets{};
         AxisVelocities velocities{};
-        velocities.fill(base_velocity);
+        velocities.fill(base_velocity_);
 
         for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
             if (idx < tableItems[axis].size()) {
                 const ITEM_NODE& node = tableItems[axis][idx];
                 targets[axis] = node.lPosition;
-                velocities[axis] = (node.dwMoveSpd > 0) ? node.dwMoveSpd : base_velocity;
+                velocities[axis] = (node.dwMoveSpd > 0) ? node.dwMoveSpd : base_velocity_;
                 hasCommand[axis] = true;
             }
         }

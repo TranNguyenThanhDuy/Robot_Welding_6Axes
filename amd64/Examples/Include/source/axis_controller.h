@@ -25,8 +25,8 @@ constexpr size_t AXIS_COUNT = 6;
 #endif
 // ------------------------------------------------------------
 
-constexpr unsigned int base_velocity = 20000;
-constexpr unsigned int min_velocity = 10;
+constexpr unsigned int default_base_velocity = 20000;
+constexpr unsigned int default_min_velocity = 10;
 constexpr unsigned short default_accel_time = 100;
 constexpr unsigned short default_decel_time = 100;
 
@@ -69,6 +69,14 @@ public:
     void setModeFile();
     void setFileName(const std::string& name);
     std::string FileName() const;
+    void setBaseVelocity(unsigned int value);
+    void setMinVelocity(unsigned int value);
+    void setAccelTime(unsigned short value);
+    void setDecelTime(unsigned short value);
+    unsigned int baseVelocity() const;
+    unsigned int minVelocity() const;
+    unsigned short accelTime() const;
+    unsigned short decelTime() const;
 
 private:
     enum class CaptureMode : int {
@@ -100,6 +108,10 @@ private:
     std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::FileMode)};
     std::atomic<bool> recording_{false};
     std::thread rec_thread_{};
+    unsigned int base_velocity_ = default_base_velocity;
+    unsigned int min_velocity_ = default_min_velocity;
+    unsigned short accel_time_ = default_accel_time;
+    unsigned short decel_time_ = default_decel_time;
 
     std::string filename_;
 };

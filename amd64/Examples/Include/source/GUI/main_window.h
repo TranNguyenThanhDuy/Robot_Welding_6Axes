@@ -16,6 +16,7 @@ class QPushButton;
 class QLabel;
 class QSpinBox;
 class QTimer;
+class QFormLayout;
 
 class MainWindow : public QWidget {
 public:
@@ -36,6 +37,10 @@ private:
     QPlainTextEdit* log_ = nullptr;
     QLabel* cameraPreview_ = nullptr;
     std::vector<QSpinBox*> axisInputs_;
+    QSpinBox* baseVelocityInput_ = nullptr;
+    QSpinBox* minVelocityInput_ = nullptr;
+    QSpinBox* accelTimeInput_ = nullptr;
+    QSpinBox* decelTimeInput_ = nullptr;
 
     QPushButton* btnOn_ = nullptr;
     QPushButton* btnOff_ = nullptr;

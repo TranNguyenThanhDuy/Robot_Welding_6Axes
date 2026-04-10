@@ -30,12 +30,17 @@ constexpr unsigned int default_min_velocity = 10;
 constexpr unsigned short default_accel_time = 100;
 constexpr unsigned short default_decel_time = 100;
 
+constexpr int DI_INDEX = 0; // chọn DI0
+constexpr int DO_INDEX = 0; // DO0
+
 using AxisPorts = std::array<int, AXIS_COUNT>;
-using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
+constexpr size_t EXT_AXIS_COUNT = AXIS_COUNT + 1;
+using AxisPositionsEx = std::array<int, EXT_AXIS_COUNT>;
+using AxisVectorsEx = std::array<std::vector<int>, EXT_AXIS_COUNT>;
 using AxisPositions = std::array<int, AXIS_COUNT>;
+using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
 using AxisStatuses = std::array<EZISERVO_AXISSTATUS, AXIS_COUNT>;
 using AxisVelocities = std::array<unsigned int, AXIS_COUNT>;
-using AxisVectors = std::array<std::vector<int>, AXIS_COUNT>;
 using AxisBools = std::array<bool, AXIS_COUNT>;
 
 class AxisController {
@@ -77,6 +82,9 @@ public:
     unsigned int minVelocity() const;
     unsigned short accelTime() const;
     unsigned short decelTime() const;
+    bool readInputRisingEdge(bool& triggered);
+    bool readInputSignal(bool& signal);
+    bool setRelay(bool on);
 
 private:
     enum class CaptureMode : int {
@@ -84,6 +92,13 @@ private:
         ManualSave = 1,
         AutoRecord = 2
     };
+
+    int FAS_SetOutput(
+        unsigned char nPortID,
+        unsigned char iSlaveNo,
+        unsigned int uSetMask,
+        unsigned int uClearMask
+    );
 
     bool readAxisStatuses(AxisStatuses& statuses);
     bool readActualPositions(AxisPositions& positions);
@@ -96,14 +111,14 @@ private:
     bool allServoOn(const AxisStatuses& statuses) const;
     void recordingThread();
     void stopRecordingThread();
-    bool goWithBuffer(const AxisVectors& paths);
+    bool goWithBuffer(const AxisVectorsEx& paths);
     bool loadFileToBuffer(const std::string& filename);
    
-    AxisVectors file_buffer_;
+    AxisVectorsEx file_buffer_;
     AxisPorts nPortIDs_{};
     AxisSlaves iSlaveNos_{};
-    AxisVectors recorded_positions_{};
-    AxisVectors saved_positions_{};
+    AxisVectorsEx recorded_positions_{};
+    AxisVectorsEx saved_positions_{};
     std::mutex rec_mtx_{};
     std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::FileMode)};
     std::atomic<bool> recording_{false};

@@ -6,6 +6,8 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <cstdint>
+typedef uint32_t DWORD;
 
 AxisController::AxisController() {
     int portDefaults[6] = {0, 0, 0, 0, 0, 0};
@@ -24,7 +26,7 @@ AxisController::~AxisController() {
 }
 
 constexpr size_t MAX_BUFFERS = 8;
-// AxisVectors recorded_positions;
+// AxisVectorsEx recorded_positions;
 std::mutex rec_mtx;
 std::atomic<bool> recording{false};
 std::thread rec_thread;
@@ -33,23 +35,23 @@ std::string AxisController::axisName(size_t idx) const {
     return "Motor " + std::to_string(idx + 1);
 }
 
-using RecordBuffers = std::array<AxisVectors, MAX_BUFFERS>;
+using RecordBuffers = std::array<AxisVectorsEx, MAX_BUFFERS>;
 
 RecordBuffers recorded_positions_buffers;
 
 std::atomic<size_t> currentRecordingBuffer{MAX_BUFFERS - 1};
 std::atomic<size_t> bufferCount{0};
 
-AxisVectors downsampleBuffer(
-    const AxisVectors& in,
+AxisVectorsEx downsampleBuffer(
+    const AxisVectorsEx& in,
     size_t step
 ) {
-    AxisVectors out;
+    AxisVectorsEx out;
     if (in[0].empty()) return out;
 
     size_t len = in[0].size();
     for (size_t i = 0; i < len; i += step) {
-        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+        for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
             out[a].push_back(in[a][i]);
         }
     }
@@ -267,19 +269,19 @@ bool AxisController::servoOff() {
     return allOk;
 }
 
-AxisVectors compressBuffer(
-    const AxisVectors& in,
+AxisVectorsEx compressBuffer(
+    const AxisVectorsEx& in,
     int posEps,
     int minTrendLen
 ) {
-    AxisVectors out;
+    AxisVectorsEx out;
     size_t N = in[0].size();
     if (N < 2) return in;
 
     std::vector<bool> keep(N, false);
     keep[0] = true;
 
-    for (size_t a = 0; a < AXIS_COUNT; ++a) {
+    for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
         int lastDir = 0;
         int trendLen = 0;
 
@@ -305,7 +307,7 @@ AxisVectors compressBuffer(
 
     for (size_t i = 0; i < N; ++i) {
         if (!keep[i]) continue;
-        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+        for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
             out[a].push_back(in[a][i]);
         }
     }
@@ -371,11 +373,10 @@ void AxisController::recordingThread() {
 
     while (recording_.load()) {
         AxisPositions pos{};
+        bool inputSignal = false;
 
-        if (!readActualPositions(pos)) {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(RECORD_PERIOD_MS)
-            );
+        if (!readActualPositions(pos) || !readInputSignal(inputSignal)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(RECORD_PERIOD_MS));
             continue;
         }
 
@@ -384,11 +385,12 @@ void AxisController::recordingThread() {
             for (size_t i = 0; i < AXIS_COUNT; ++i) {
                 recorded_positions_[i].push_back(pos[i]);
             }
+
+            // 👇 thêm control bit
+            recorded_positions_[AXIS_COUNT].push_back(inputSignal ? 1 : 0);
         }
 
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(RECORD_PERIOD_MS)
-        );
+        std::this_thread::sleep_for(std::chrono::milliseconds(RECORD_PERIOD_MS));
     }
 }
 
@@ -451,7 +453,7 @@ bool AxisController::getPos(AxisPositions& pos) {
     return readActualPositions(pos);
 }
 
-bool AxisController::goWithBuffer(const AxisVectors& paths) {
+bool AxisController::goWithBuffer(const AxisVectorsEx& paths) {
 
     if (paths[0].empty()) {
         std::cout << "Buffer empty." << std::endl;
@@ -475,6 +477,8 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
             target[a] = paths[a][i];
             hasCommand[a] = true;
         }
+        bool relay = paths[AXIS_COUNT][i];
+        setRelay(relay);
 
         AxisPositions current{};
         if (!readActualPositions(current)) return false;
@@ -518,36 +522,26 @@ bool AxisController::goFromFile(const std::string& filename)
         std::cout << "Cannot open file: " << filename << std::endl;
         return false;
     }
-
-    // Lưu tạm vào buffer theo dạng mảng các dòng (array of rows)
-    std::vector<AxisPositions> pathBuffer; 
     std::string line;
-
+    // --- PHẦN BẠN ĐANG THIẾU: Chuyển đổi và gọi hàm ---
+    AxisVectorsEx compatiblePaths;
     while (std::getline(file, line))
     {
         if (line.empty()) continue;
 
         std::stringstream ss(line);
-        AxisPositions pos{};
+        AxisPositionsEx pos{};
 
-        for (size_t i = 0; i < AXIS_COUNT; i++)
+        for (size_t i = 0; i < EXT_AXIS_COUNT; i++)
         {
-            if (!(ss >> pos[i]))
-            {
+            if (!(ss >> pos[i])) {
                 std::cout << "Format error at line: " << line << "\n";
                 return false;
             }
         }
-        
-        // Lưu vào mảng 1 chiều chứa các dòng
-        pathBuffer.push_back(pos);
-    }
 
-    // --- PHẦN BẠN ĐANG THIẾU: Chuyển đổi và gọi hàm ---
-    AxisVectors compatiblePaths;
-    for (const auto& row : pathBuffer) {
-        for (size_t i = 0; i < AXIS_COUNT; i++) {
-            compatiblePaths[i].push_back(row[i]);
+        for (size_t i = 0; i < EXT_AXIS_COUNT; i++) {
+            compatiblePaths[i].push_back(pos[i]);
         }
     }
 
@@ -578,7 +572,7 @@ bool AxisController::go() {
         std::cout << "GO command is only available in AUTO RECORD or FILE mode." << std::endl;
         return false;
     }
-    AxisVectors paths;
+    AxisVectorsEx paths;
     {
         std::lock_guard<std::mutex> lk(rec_mtx_);
         paths = recorded_positions_;
@@ -766,25 +760,26 @@ bool AxisController::savePos() {
         std::cout << "Failed to read current positions. Save pos aborted." << std::endl;
         return false;
     }
-
+    bool inputSignal = false;
+    readInputSignal(inputSignal);
     std::lock_guard<std::mutex> lk(rec_mtx_);
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         saved_positions_[i].push_back(pos[i]);
     }
-
+    saved_positions_[AXIS_COUNT].push_back(inputSignal ? 1 : 0);
     std::cout << "Saved current position to manual buffer. Total manual points: "
               << saved_positions_[0].size() << std::endl;
     std::cout << "Saved - ";
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         std::cout << axisName(i) << ": " << pos[i];
         if (i + 1 < AXIS_COUNT) std::cout << ", ";
-    }
+    }   
     std::cout << std::endl;
     return true;
 }
 
 void AxisController::posTable() {
-    AxisVectors paths;
+    AxisVectorsEx paths;
     {
         std::lock_guard<std::mutex> lk(rec_mtx_);
         paths = recorded_positions_;
@@ -833,7 +828,7 @@ void AxisController::posTable() {
     }
 
     std::cout << "Position tables updated." << std::endl;
-    for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
+    for (size_t axis = 0; axis < EXT_AXIS_COUNT; ++axis) {
         std::cout << axisName(axis) << " items: " << wrote[axis] << std::endl;
     }
 }
@@ -907,7 +902,7 @@ bool AxisController::loadFileToBuffer(const std::string& filename) {
         return false;
     }
 
-    AxisVectors temp;
+    AxisVectorsEx temp;
     for (auto& v : temp) v.clear();
 
     std::string line;
@@ -935,4 +930,51 @@ bool AxisController::loadFileToBuffer(const std::string& filename) {
               << file_buffer_[0].size() << std::endl;
 
     return true;
+}
+
+
+bool lastSignal = false;
+
+bool AxisController::readInputRisingEdge(bool& triggered)
+{
+    bool current = false;
+    if (!readInputSignal(current)) return false;
+
+    triggered = (!lastSignal && current);
+    lastSignal = current;
+
+    return true;
+}
+
+bool AxisController::readInputSignal(bool& signal)
+{
+    DWORD input;
+
+    if (FAS_GetIOInput(nPortIDs_[0], iSlaveNos_[0], &input) != FMM_OK)
+        return false;
+
+    signal = (input & (1 << DI_INDEX)) != 0;
+    return true;
+}
+
+bool AxisController::setRelay(bool on)
+{
+    if (on)
+    {
+        return FAS_SetOutput(
+            nPortIDs_[0],
+            iSlaveNos_[0],
+            (1 << DO_INDEX),  // set bit
+            0                 // không clear
+        ) == FMM_OK;
+    }
+    else
+    {
+        return FAS_SetOutput(
+            nPortIDs_[0],
+            iSlaveNos_[0],
+            0,                // không set
+            (1 << DO_INDEX)   // clear bit
+        ) == FMM_OK;
+    }
 }

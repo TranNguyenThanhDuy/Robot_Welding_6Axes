@@ -8,7 +8,11 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <deque>
+#include <cstdint> // Thêm thư viện này
+
+// Thêm định nghĩa DWORD cho môi trường Linux
+typedef uint32_t DWORD; 
+
 // ------------------------------------------------------------
 // Axis selection
 // Define exactly one of AXIS_1, AXIS_2, AXIS_5, AXIS_6
@@ -25,24 +29,30 @@ constexpr size_t AXIS_COUNT = 6;
 #endif
 // ------------------------------------------------------------
 
+// Thêm hằng số mở rộng để chứa thêm 1 cột tín hiệu IO
+constexpr size_t EXT_AXIS_COUNT = AXIS_COUNT + 1; 
+
 constexpr unsigned int base_velocity = 20000;
 constexpr unsigned int min_velocity = 10;
+
+// Các chân IO mặc định (có thể đổi số kênh tương ứng trên board của bạn)
+constexpr int DI_INDEX = 0; 
+constexpr int DO_INDEX = 0; 
 
 using AxisPorts = std::array<int, AXIS_COUNT>;
 using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
 using AxisPositions = std::array<int, AXIS_COUNT>;
 using AxisStatuses = std::array<EZISERVO_AXISSTATUS, AXIS_COUNT>;
-using AxisVelocities = std::array<int, AXIS_COUNT>;
+using AxisVelocities = std::array<unsigned int, AXIS_COUNT>;
 using AxisVectors = std::array<std::vector<int>, AXIS_COUNT>;
 using AxisBools = std::array<bool, AXIS_COUNT>;
 
+// Kiểu dữ liệu mở rộng có chứa IO
+using AxisVectorsEx = std::array<std::vector<int>, EXT_AXIS_COUNT>; 
+using AxisPositionsEx = std::array<int, EXT_AXIS_COUNT>;
+
 class AxisController {
 public:
-    struct PlannerBlock {
-        AxisPositions target;
-        AxisVelocities velocity;
-        double duration;
-    };
     AxisController();
     ~AxisController();
 
@@ -73,42 +83,34 @@ public:
     void setFileName(const std::string& name);
     std::string FileName() const;
 
-    // Các hàm giao tiếp I/O cơ bản
+    // Các hàm giao tiếp I/O cơ bản (mới và cũ kết hợp)
     bool setOutputSignal(size_t axisIdx, uint32_t outMask, bool state);
     bool isInputActive(size_t axisIdx, uint32_t inMask, bool& active);
+    
+    // Các hàm IO của module cũ dùng cho Relay
+    bool readInputSignal(bool& signal);
+    bool readInputRisingEdge(bool& triggered);
+    bool setRelay(bool on);
 
     // Chức năng theo dõi Endstop
     void startEndstopMonitor(size_t triggerAxis, uint32_t endstopMask);
     void stopEndstopMonitor();
 
-    bool writeBufferToFile(const std::string& filename,const AxisVectors& data,bool append);
-    // void inputToOutputTest();
-    // void monitorAllInputs();
-    // void testAllOutputs();
-    void executeBlock(const PlannerBlock& block);
-    void plannerThreadFunc();
-    void startPlannerThread();
-    void stopPlannerThread();
-    AxisVelocities rampVelocity(const AxisVelocities& last, const AxisVelocities& target) const;
-    void startPlanner();
-    void stopPlanner();
+    // SỬA: Thay AxisVectors bằng AxisVectorsEx
+    bool writeBufferToFile(const std::string& filename,
+                           const AxisVectorsEx& data,
+                           bool append);
+
 private:
     enum class CaptureMode : int {
         FileMode = 0,
         ManualSave = 1,
         AutoRecord = 2
     };
-    void fillPlannerBuffer(const AxisVectors& paths);
+
+    // SỬA: Thay AxisVectors bằng AxisVectorsEx
+    void fillPlannerBuffer(const AxisVectorsEx& paths);
     void motionThreadFunc();
-
-    // ===== PLANNER BUFFER =====
-
-    std::deque<PlannerBlock> plannerBuffer_;
-    std::mutex planner_mtx_;
-    std::thread planner_thread_;
-    std::atomic<bool> planner_running_{false};
-
-    static constexpr size_t PLANNER_BUFFER_SIZE = 16;
 
     std::thread endstop_thread_;
     std::atomic<bool> monitoring_endstop_{false};
@@ -122,28 +124,26 @@ private:
     bool allServoOn(const AxisStatuses& statuses) const;
     void recordingThread();
     void stopRecordingThread();
-    bool goWithBuffer(const AxisVectors& paths);
+    
+    // SỬA: Thay AxisVectors bằng AxisVectorsEx
+    bool goWithBuffer(const AxisVectorsEx& paths);
     bool loadFileToBuffer(const std::string& filename);
    
-    AxisVectors file_buffer_;
     AxisPorts nPortIDs_{};
     AxisSlaves iSlaveNos_{};
-    AxisVectors recorded_positions_{};
-    AxisVectors saved_positions_{};
+    
+    // SỬA: Chuyển các buffer lưu dữ liệu sang dạng Ex (thêm cột IO)
+    AxisVectorsEx file_buffer_{};
+    AxisVectorsEx recorded_positions_{};
+    AxisVectorsEx saved_positions_{};
+    
     std::mutex rec_mtx_{};
     std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::FileMode)};
     std::atomic<bool> recording_{false};
     std::thread rec_thread_{};
     int record_file_index_ = 1;
     std::string filename_;
-    AxisVectors recorded_velocities_;
-
-    std::array<double, AXIS_COUNT> gear_ratios_;
-    // Độ phân giải encoder (xung/vòng). Thay đổi nếu driver của bạn set khác 10000
-    int ppr_ = 10000;
-    // Thêm định nghĩa kiểu nếu chưa có
-// using AxisVelocities = std::array<unsigned int, AXIS_COUNT>;
-    bool readActualVelocities(AxisVelocities& velocities);
-    AxisPositions lastTarget;
-    int rampVelocity(int last, int target) const;
+    
+    // THÊM: Biến lưu trữ trạng thái I/O trước đó cho hàm RisingEdge
+    bool last_input_signal_ = false;
 };

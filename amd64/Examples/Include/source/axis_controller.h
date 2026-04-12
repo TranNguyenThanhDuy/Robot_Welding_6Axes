@@ -93,12 +93,12 @@ private:
         AutoRecord = 2
     };
 
-    int FAS_SetOutput(
-        unsigned char nPortID,
-        unsigned char iSlaveNo,
-        unsigned int uSetMask,
-        unsigned int uClearMask
-    );
+    // int FAS_SetOutput(
+    //     unsigned char nPortID,
+    //     unsigned char iSlaveNo,
+    //     unsigned int uSetMask,
+    //     unsigned int uClearMask
+    // );
 
     bool readAxisStatuses(AxisStatuses& statuses);
     bool readActualPositions(AxisPositions& positions);

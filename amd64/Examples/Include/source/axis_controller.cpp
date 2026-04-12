@@ -1191,25 +1191,13 @@ void AxisController::motionThreadFunc()
 }
 
 bool AxisController::readInputRisingEdge(bool& triggered)
-
 {
-
     bool current = false;
-
     if (!readInputSignal(current)) return false;
-
-
-
     // 👇 Sử dụng biến thành viên last_input_signal_ thay vì biến toàn cục
-
     triggered = (!last_input_signal_ && current);
-
     last_input_signal_ = current;
-
-
-
     return true;
-
 }
 
 
@@ -1217,63 +1205,33 @@ bool AxisController::readInputRisingEdge(bool& triggered)
 // Các hàm readInputSignal và setRelay giữ nguyên vì đã đúng ý bạn:
 
 bool AxisController::readInputSignal(bool& signal)
-
 {
-
     DWORD input;
-
     if (FAS_GetIOInput(nPortIDs_[0], iSlaveNos_[0], &input) != FMM_OK)
-
         return false;
-
-
-
     signal = (input & (1 << DI_INDEX)) != 0;
-
     return true;
-
 }
 
-
-
 bool AxisController::setRelay(bool on)
-
 {
-
     if (on)
-
     {
-
         return FAS_SetOutput(
-
             nPortIDs_[0],
-
             iSlaveNos_[0],
-
             (1 << DO_INDEX),  // set bit
-
             0                 // không clear
-
         ) == FMM_OK;
 
     }
-
     else
-
     {
-
         return FAS_SetOutput(
-
             nPortIDs_[0],
-
             iSlaveNos_[0],
-
             0,                // không set
-
             (1 << DO_INDEX)   // clear bit
-
         ) == FMM_OK;
-
     }
-
 }

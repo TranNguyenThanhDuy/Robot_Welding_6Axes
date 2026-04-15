@@ -1,0 +1,33 @@
+# ====== Config (Raspberry Pi) ======
+# CROSS_COMPILE lets you cross-build from x86 hosts (e.g. CROSS_COMPILE=arm-linux-gnueabihf-).
+CROSS_COMPILE ?= aarch64-linux-gnu-
+CXX           := $(CROSS_COMPILE)g++
+TARGET        := test_rpi
+
+SRC      := tc.cpp DriverConnection.cpp
+OBJ      := $(SRC:.cpp=.o)
+
+CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -I.
+LIBDIR   ?= .
+LDFLAGS  ?= -L$(LIBDIR) -Wl,-rpath,'$$ORIGIN'
+LDLIBS   ?= -lEziMOTIONPlusR
+
+# ====== Rules ======
+.PHONY: all clean run debug
+
+all: $(TARGET)
+
+$(TARGET): $(OBJ)
+	$(CXX) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+run: $(TARGET)
+	./$(TARGET)
+
+debug: CXXFLAGS := -std=c++17 -g -O0 -Wall -Wextra -I.
+debug: clean all
+
+clean:
+	$(RM) $(OBJ) $(TARGET)

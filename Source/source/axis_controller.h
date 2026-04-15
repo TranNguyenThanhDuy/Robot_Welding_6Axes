@@ -1,0 +1,126 @@
+#pragma once
+
+#include "DriverConnection.h"
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+// ------------------------------------------------------------
+// Axis selection
+// Define exactly one of AXIS_1, AXIS_2, AXIS_5, AXIS_6
+#if defined(AXIS_1)
+constexpr size_t AXIS_COUNT = 1;
+#elif defined(AXIS_2)
+constexpr size_t AXIS_COUNT = 2;
+#elif defined(AXIS_5)
+constexpr size_t AXIS_COUNT = 5;
+#elif defined(AXIS_6)
+constexpr size_t AXIS_COUNT = 6;
+#else
+#error "Define one of AXIS_1, AXIS_2, AXIS_5, AXIS_6 before building."
+#endif
+// ------------------------------------------------------------
+
+constexpr unsigned int base_velocity = 20000;
+constexpr unsigned int min_velocity = 10;
+
+using AxisPorts = std::array<int, AXIS_COUNT>;
+using AxisSlaves = std::array<unsigned char, AXIS_COUNT>;
+using AxisPositions = std::array<int, AXIS_COUNT>;
+using AxisStatuses = std::array<EZISERVO_AXISSTATUS, AXIS_COUNT>;
+using AxisVelocities = std::array<int, AXIS_COUNT>;
+using AxisVectors = std::array<std::vector<int>, AXIS_COUNT>;
+using AxisBools = std::array<bool, AXIS_COUNT>;
+
+class AxisController {
+public:
+    AxisController();
+    ~AxisController();
+
+    void initializeSystem();
+    bool servoOn();
+    bool servoOff();
+    bool home();
+    void record();
+    bool savePos();
+    void setModeRecord();
+    void setModeSave();
+    bool isFileMode() const;
+    bool isSaveMode() const;
+    std::string modeName() const;
+    void stop();
+    void clear();
+    bool getPos(AxisPositions& pos);
+    bool go();
+    bool movePos(const AxisPositions& targets);
+    bool goPos();
+    void posTable();
+    void printTable();
+    void setOriginPos();
+    std::string axisName(size_t idx) const;
+    bool isRecording() const;
+    bool goFromFile(const std::string& filename);
+    void setModeFile();
+    void setFileName(const std::string& name);
+    std::string FileName() const;
+
+    // Các hàm giao tiếp I/O cơ bản
+    bool setOutputSignal(size_t axisIdx, uint32_t outMask, bool state);
+    bool isInputActive(size_t axisIdx, uint32_t inMask, bool& active);
+
+    // Chức năng theo dõi Endstop
+    void startEndstopMonitor(size_t triggerAxis, uint32_t endstopMask);
+    void stopEndstopMonitor();
+
+    bool writeBufferToFile(const std::string& filename,const AxisVectors& data,bool append);
+    bool readActualVelocities(AxisVelocities& velocities);
+    bool writeRpmToFile(const std::string& filename, const AxisVectors& velocityData);
+    // void inputToOutputTest();
+    // void monitorAllInputs();
+    // void testAllOutputs();
+
+private:
+    enum class CaptureMode : int {
+        FileMode = 0,
+        ManualSave = 1,
+        AutoRecord = 2
+    };
+
+    std::thread endstop_thread_;
+    std::atomic<bool> monitoring_endstop_{false};
+    void endstopThreadFunc(size_t triggerAxis, uint32_t endstopMask);
+
+    bool readAxisStatuses(AxisStatuses& statuses);
+    bool readActualPositions(AxisPositions& positions);
+    AxisVelocities computeVelocities(const AxisPositions& current,
+                                     const AxisPositions& targets,
+                                     const AxisBools& hasCommand) const;
+    bool allServoOn(const AxisStatuses& statuses) const;
+    void recordingThread();
+    void stopRecordingThread();
+    bool goWithBuffer(const AxisVectors& paths);
+    bool loadFileToBuffer(const std::string& filename);
+   
+    AxisVectors file_buffer_;
+    AxisPorts nPortIDs_{};
+    AxisSlaves iSlaveNos_{};
+    AxisVectors recorded_positions_{};
+    AxisVectors saved_positions_{};
+    std::mutex rec_mtx_{};
+    std::atomic<int> capture_mode_{static_cast<int>(CaptureMode::FileMode)};
+    std::atomic<bool> recording_{false};
+    std::thread rec_thread_{};
+    int record_file_index_ = 1;
+    std::string filename_;
+    AxisVectors recorded_velocities_;
+
+    std::array<std::vector<double>, AXIS_COUNT> recorded_rpms_; 
+    std::array<double, AXIS_COUNT> gear_ratios_;
+    void saveRpmFromPositions(const std::string& filename, const AxisVectors& positions);
+    // Độ phân giải encoder (xung/vòng). Thay đổi nếu driver của bạn set khác 10000
+    int ppr_ = 10000;
+};

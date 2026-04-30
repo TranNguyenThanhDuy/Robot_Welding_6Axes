@@ -1,0 +1,50 @@
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Build, test, and coverage artifacts
+build/
+dist/
+site/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+
+# Local secrets and machine-specific config
+.env
+.env.*
+*.env
+*.local
+*.secret
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.csr
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+READ.md

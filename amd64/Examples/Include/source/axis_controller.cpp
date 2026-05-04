@@ -12,6 +12,7 @@
 #include <array>
 #include <vector>
 
+std::atomic<bool> motion_idle{true};
 // ===== GRBL-style planner buffer =====
 constexpr size_t PLANNER_BUFFER_SIZE = 16;
 std::atomic<bool> planner_done{false};
@@ -55,6 +56,11 @@ struct PlannerBuffer {
         std::lock_guard<std::mutex> lk(mtx);
         return isEmptyUnsafe();
     }
+
+    bool isFull() {
+        std::lock_guard<std::mutex> lk(mtx);
+        return isFullUnsafe();
+    }
 };
 
 static PlannerBuffer planner;
@@ -83,9 +89,7 @@ AxisController::~AxisController() {
 }
 
 constexpr size_t MAX_BUFFERS = 8;
-// AxisVectorsEx recorded_positions;
 std::mutex rec_mtx;
-// std::atomic<bool> recording{false};
 std::thread rec_thread;
 
 std::string AxisController::axisName(size_t idx) const {
@@ -108,7 +112,6 @@ AxisVectorsEx downsampleBuffer(
 
     size_t len = in[0].size();
     for (size_t i = 0; i < len; i += step) {
-        // 👇 FIX: Đổi thành EXT_AXIS_COUNT
         for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
             out[a].push_back(in[a][i]);
         }
@@ -284,7 +287,7 @@ AxisVectorsEx compressBuffer(
     int minTrendLen
 ) {
     AxisVectorsEx out;
-    if (in[0].empty()) return out; // Thêm check an toàn
+    if (in[0].empty()) return out; 
     
     size_t N = in[0].size();
     if (N < 2) return in;
@@ -316,7 +319,6 @@ AxisVectorsEx compressBuffer(
         keep[N - 1] = true;
     }
 
-    // Luôn giữ lại các điểm mà tín hiệu I/O thay đổi trạng thái
     for (size_t i = 1; i < N; ++i) {
         if (in[AXIS_COUNT][i] != in[AXIS_COUNT][i - 1]) {
             keep[i] = true;
@@ -326,7 +328,6 @@ AxisVectorsEx compressBuffer(
 
     for (size_t i = 0; i < N; ++i) {
         if (!keep[i]) continue;
-        // 👇 FIX QUAN TRỌNG: Phải lặp đến EXT_AXIS_COUNT
         for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) { 
             out[a].push_back(in[a][i]);
         }
@@ -411,9 +412,8 @@ void AxisController::recordingThread() {
     constexpr int RECORD_PERIOD_MS = 10;
     while (recording_.load()) {
         AxisPositions pos{};
-        bool inputSignal = false; // <-- Thêm
+        bool inputSignal = false;
 
-        // 👇 Cập nhật điều kiện đọc
         if (!readActualPositions(pos) || !readInputSignal(inputSignal)) { 
             std::this_thread::sleep_for(std::chrono::milliseconds(RECORD_PERIOD_MS));
             continue;
@@ -424,7 +424,6 @@ void AxisController::recordingThread() {
             for (size_t i = 0; i < AXIS_COUNT; ++i) {
                 recorded_positions_[i].push_back(pos[i]);
             }
-            // 👇 Lưu control bit vào mảng
             recorded_positions_[AXIS_COUNT].push_back(inputSignal ? 1 : 0);
         }
 
@@ -432,7 +431,6 @@ void AxisController::recordingThread() {
     }
 }
 
-// BỔ SUNG: Hàm stopRecordingThread() để khắc phục lỗi undefined reference
 void AxisController::stopRecordingThread() {
     if (recording_.load()) {
         recording_.store(false);
@@ -448,7 +446,6 @@ void AxisController::stop() {
         return;
     }
     stopRecordingThread();
-    // --- AUTO SAVE RECORD TO FILE ---
     std::lock_guard<std::mutex> lk(rec_mtx_);
     std::cout << "Recording stopped." << std::endl;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
@@ -470,7 +467,6 @@ void AxisController::stop() {
     } else {
         std::cout << "Failed to save record file." << std::endl;
     }
-    
 }
 
 void AxisController::clear() {
@@ -489,7 +485,6 @@ bool AxisController::goWithBuffer(const AxisVectorsEx& paths)
 {
    if (paths[0].empty()) return false;
 
-    // ✅ RESET trạng thái trước khi chạy
     planner_done.store(false);
 
     motion_running.store(false);
@@ -499,10 +494,6 @@ bool AxisController::goWithBuffer(const AxisVectorsEx& paths)
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses) || !allServoOn(statuses)) return false;
 
-    // bật output
-    size_t outAxis = 0;
-    uint32_t outMask = 0x01;
-    setOutputSignal(outAxis, outMask, true);
     {
         std::lock_guard<std::mutex> lk(planner.mtx);
         planner.head = 0;
@@ -510,7 +501,6 @@ bool AxisController::goWithBuffer(const AxisVectorsEx& paths)
     }
     planner_done.store(false);
 
-    // ===== GRBL planner =====
     motion_running.store(true);
 
     std::thread planner_thread([this, paths]() {
@@ -519,7 +509,6 @@ bool AxisController::goWithBuffer(const AxisVectorsEx& paths)
 
     motion_thread = std::thread(&AxisController::motionThreadFunc, this);
     
-    // đợi chạy xong (Đã xóa dòng bool done = false; ở đây để hết bị warning)
     while (true) {
         bool idle = planner.isEmpty();
         bool plannerFinished = planner_done.load();
@@ -535,7 +524,6 @@ bool AxisController::goWithBuffer(const AxisVectorsEx& paths)
             }
         }
 
-        // ✅ FIX CHÍNH Ở ĐÂY
         if (plannerFinished && idle && !moving) break;
 
         if (!motion_running.load()) break;
@@ -546,13 +534,9 @@ bool AxisController::goWithBuffer(const AxisVectorsEx& paths)
     motion_running.store(false);
     if (motion_thread.joinable()) motion_thread.join();
 
-    // tắt output
-    setOutputSignal(outAxis, outMask, false);
-
     std::cout << "GO (GRBL-style) finished." << std::endl;
     if (planner_thread.joinable()) planner_thread.join();
     return true;
-    
 }
 
 
@@ -589,7 +573,6 @@ bool AxisController::goFromFile(const std::string& filename)
             compatiblePaths[i].push_back(row[i]);
         }
         
-        // Nếu file có lưu cột IO thì lấy, không thì mặc định là 0 (để tránh lỗi Segfault)
         if (row.size() >= EXT_AXIS_COUNT) {
             compatiblePaths[AXIS_COUNT].push_back(row[AXIS_COUNT]);
         } else {
@@ -826,7 +809,7 @@ bool AxisController::savePos() {
         return false;
     }
 
-    bool inputSignal = false;         // <-- Thêm
+    bool inputSignal = false;         
     readInputSignal(inputSignal);
 
     std::lock_guard<std::mutex> lk(rec_mtx_);
@@ -842,17 +825,12 @@ bool AxisController::savePos() {
         if (i + 1 < AXIS_COUNT) std::cout << ", ";
     }
     std::cout << std::endl;
-    // --- APPEND TO savePos.txt ---
-    AxisVectorsEx temp;
 
+    AxisVectorsEx temp;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         temp[i].push_back(pos[i]);
     }
-
-    // // chỉ ghi 1 điểm (pos hiện tại)
-    // for (size_t i = 0; i < AXIS_COUNT; ++i) {
-    //     temp[i].push_back(pos[i]);
-    // }
+    temp[AXIS_COUNT].push_back(inputSignal ? 1 : 0);
 
     if (writeBufferToFile("savePos.txt", temp, true)) {
         std::cout << "Saved to savePos.txt" << std::endl;
@@ -1026,7 +1004,6 @@ bool AxisController::loadFileToBuffer(const std::string& filename) {
 bool AxisController::setOutputSignal(size_t axisIdx, uint32_t outMask, bool state) {
     if (axisIdx >= AXIS_COUNT) return false;
     
-    // Thay thế DWORD bằng uint32_t cho môi trường Linux
     uint32_t dwSetMask = state ? outMask : 0;
     uint32_t dwClearMask = state ? 0 : outMask;
     
@@ -1036,7 +1013,6 @@ bool AxisController::setOutputSignal(size_t axisIdx, uint32_t outMask, bool stat
 bool AxisController::isInputActive(size_t axisIdx, uint32_t inMask, bool& active) {
     if (axisIdx >= AXIS_COUNT) return false;
     
-    // Thay thế DWORD bằng uint32_t
     uint32_t dwInput = 0;
     
     if (FAS_GetIOInput(nPortIDs_[axisIdx], iSlaveNos_[axisIdx], &dwInput) == FMM_OK) {
@@ -1051,9 +1027,9 @@ void AxisController::endstopThreadFunc(size_t triggerAxis, uint32_t endstopMask)
     while (monitoring_endstop_.load()) {
         bool currentState = false;
         if (isInputActive(triggerAxis, endstopMask, currentState)) {
-            if (currentState && !lastState) { // Bắt cạnh lên (vừa nhấn)
+            if (currentState && !lastState) {
                 std::cout << "[Endstop] Triggered! Auto-saving position..." << std::endl;
-                savePos(); // Gọi hàm lưu vị trí vào saved_positions_
+                savePos();
             }
             lastState = currentState;
         }
@@ -1094,9 +1070,9 @@ bool AxisController::writeBufferToFile(const std::string& filename,
     size_t steps = data[0].size();
 
     for (size_t i = 0; i < steps; ++i) {
-        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+        for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
             file << data[a][i];
-            if (a + 1 < AXIS_COUNT) file << " ";
+            if (a + 1 < EXT_AXIS_COUNT) file << " ";
         }
         file << "\n";
     }
@@ -1105,19 +1081,15 @@ bool AxisController::writeBufferToFile(const std::string& filename,
     return true;
 }
 
-// Thay AxisVectorsEx bằng AxisVectorsEx
 void AxisController::fillPlannerBuffer(const AxisVectorsEx& paths) 
 {
     AxisPositions current{};
-    readActualPositions(current);
+    if (!readActualPositions(current)) return;
 
-    for (size_t i = 0; i < paths[0].size(); ++i) {
-        while (true) {
+    for (size_t i = 0; i < paths[0].size(); ++i) 
+    {
+        while (planner.isFull()) {
             if (!motion_running.load()) return;
-            {
-                std::lock_guard<std::mutex> lk(planner.mtx);
-                if (!planner.isFullUnsafe()) break;
-            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
@@ -1129,30 +1101,51 @@ void AxisController::fillPlannerBuffer(const AxisVectorsEx& paths)
             hasCommand[a] = true;
         }
 
-        // 👇 THÊM: Đọc tín hiệu IO từ paths (cột AXIS_COUNT)
         block.relay_state = (paths[AXIS_COUNT][i] != 0);
-
         block.velocity = computeVelocities(current, block.target, hasCommand);
+
         current = block.target;
 
-        planner.push(block);
+        if (!planner.push(block)) {
+            std::cout << "Planner push failed!" << std::endl;
+            return;
+        }
     }
+
     planner_done.store(true);
 }
 
 void AxisController::motionThreadFunc()
 {
     PlannerBlock block;
+    bool lastRelayState = false;
+    bool firstBlock = true; // Thêm cờ để nhận lệnh I/O ngay từ dòng đầu tiên của file
 
-    while (motion_running.load()) {
+    motion_idle.store(false);
+
+    while (motion_running.load()) 
+    {
+        if (planner_done.load() && planner.isEmpty()) {
+            break;
+        }
 
         if (!planner.pop(block)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
-        setRelay(block.relay_state);
-        // gửi lệnh
+        // BẮT LỆNH RELAY THAY ĐỔI HOẶC CHẠY LẦN ĐẦU
+        if (firstBlock || block.relay_state != lastRelayState) {
+            std::cout << ">> [MOTION] Yeu cau IO thay doi -> " << (block.relay_state ? "ON" : "OFF") << std::endl;
+            
+            setRelay(block.relay_state);
+            lastRelayState = block.relay_state;
+            firstBlock = false;
+            
+            std::cout << ">> [MOTION] Dang cho 500ms de Relay dong ngat an toan..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
             FAS_MoveSingleAxisAbsPos(
                 nPortIDs_[a],
@@ -1162,76 +1155,82 @@ void AxisController::motionThreadFunc()
             );
         }
 
-        // chờ NGẮN (giống GRBL polling nhẹ)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
         AxisStatuses statuses{};
-        bool done = false;
+        bool moving;
 
-        auto start = std::chrono::steady_clock::now();
-
-        while (!done && motion_running.load()) {
-            done = true;
+        do {
+            moving = false;
 
             for (size_t a = 0; a < AXIS_COUNT; ++a) {
-                if (FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &(statuses[a].dwValue)) == FMM_OK) {
+                if (FAS_GetAxisStatus(
+                        nPortIDs_[a],
+                        iSlaveNos_[a],
+                        &(statuses[a].dwValue)
+                    ) == FMM_OK) 
+                {
                     if (statuses[a].FFLAG_MOTIONING) {
-                        done = false;
+                        moving = true;
+                        break;
                     }
                 }
             }
 
-            // ⛔ timeout 5s tránh treo
-            if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
-                std::cout << "Motion timeout!" << std::endl;
-                break;
-            }
-
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
+
+        } while (moving && motion_running.load());
     }
+
+    motion_idle.store(true);
 }
 
 bool AxisController::readInputRisingEdge(bool& triggered)
 {
     bool current = false;
     if (!readInputSignal(current)) return false;
-    // 👇 Sử dụng biến thành viên last_input_signal_ thay vì biến toàn cục
     triggered = (!last_input_signal_ && current);
     last_input_signal_ = current;
     return true;
 }
-
-
-
-// Các hàm readInputSignal và setRelay giữ nguyên vì đã đúng ý bạn:
 
 bool AxisController::readInputSignal(bool& signal)
 {
     DWORD input;
     if (FAS_GetIOInput(nPortIDs_[0], iSlaveNos_[0], &input) != FMM_OK)
         return false;
-    signal = (input & (1 << DI_INDEX)) != 0;
+
+    // SỬA LỖI: Dịch bit 26 cho User IN 0 theo giao thức Ezi-Servo
+    uint32_t bitShift = 26 + DI_INDEX; 
+    signal = (input & (1 << bitShift)) != 0;
     return true;
 }
 
 bool AxisController::setRelay(bool on)
 {
-    if (on)
-    {
-        return FAS_SetOutput(
-            nPortIDs_[0],
-            iSlaveNos_[0],
-            (1 << DO_INDEX),  // set bit
-            0                 // không clear
-        ) == FMM_OK;
+    // =========================================================================
+    // NGUYÊN NHÂN LỖI ĐƯỢC TÌM THẤY TỪ ẢNH CHỤP CỦA BẠN:
+    // Trong bảng cài đặt I/O Setting, "User OUT 0" là danh mục số 16 (tương ứng với BIT 15).
+    // BIT 0 là "Compare Out".
+    // Do code cũ dùng Mask (1 << 0) tức là 0x01 nên nó đang bật/tắt cái "Compare Out"
+    // chứ không phải "User OUT 0" (Đó là lý do Driver báo 0=OK mà rơ-le không nhảy)
+    // =========================================================================
+    
+    uint32_t bitShift = 15 + DO_INDEX; // DO_INDEX = 0 => Bit 15
+    uint32_t mask = (1 << bitShift);   // Bit 15 = 0x8000
+    
+    uint32_t setMask   = on ? mask : 0;
+    uint32_t clearMask = on ? 0 : mask;
+    
+    int res = FAS_SetIOOutput(
+        nPortIDs_[0],
+        iSlaveNos_[0],
+        setMask,
+        clearMask
+    );
 
-    }
-    else
-    {
-        return FAS_SetOutput(
-            nPortIDs_[0],
-            iSlaveNos_[0],
-            0,                // không set
-            (1 << DO_INDEX)   // clear bit
-        ) == FMM_OK;
-    }
+    std::cout << "[IO CONTROL] Driver 0 | Lenh gui di: " << (on ? "ON" : "OFF") 
+              << " (Mask 0x" << std::hex << mask << std::dec << ") | Phan hoi (0=OK): " << res << std::endl;
+
+    return res == FMM_OK;
 }

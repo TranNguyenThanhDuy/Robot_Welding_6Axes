@@ -13,19 +13,25 @@
 #include <QSpinBox>
 #include <QString>
 #include <QStringList>
-#include <QTimer>
 #include <QVBoxLayout>
-
-#include <QLineEdit>//để điền link
+#include <QMetaObject> // Thêm thư viện này để giao tiếp giữa các luồng
+#include <QLineEdit>
 
 #include <opencv2/core/mat.hpp>
 
 #include <iostream>
 #include <vector>
+#include <thread> // Thêm thư viện thread
+#include <chrono>
 
 namespace {
 constexpr const char* kUsbCameraDevice = "/dev/video0";
 constexpr const char* kDefaultModelPath = "AI_predict/best.onnx";
+
+// GIẢI PHÁP: Đưa biến xử lý luồng ra biến tĩnh cục bộ (static global) trong namespace ẩn
+// Việc này giúp bỏ qua hoàn toàn yêu cầu phải khai báo thêm trong file main_window.h
+std::thread g_cameraThread;
+std::atomic<bool> g_cameraRunning{false};
 
 QString resolveModelPath() {
     const QString relativePath = QString::fromUtf8(kDefaultModelPath);
@@ -57,7 +63,7 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
 }
 
 MainWindow::~MainWindow() {
-    stopUsbCamera();
+    stopUsbCamera(); // Hàm này giờ sẽ an toàn dừng luồng camera
 }
 
 void MainWindow::buildUi() {
@@ -172,44 +178,58 @@ void MainWindow::buildUi() {
     log_->setMinimumHeight(220);
     root->addWidget(new QLabel("Log"));
     root->addWidget(log_);
-
-    cameraTimer_ = new QTimer(this);
-    cameraTimer_->setInterval(33);
 }
 
 void MainWindow::connectSignals() {
-    QObject::connect(btnOn_, &QPushButton::clicked,
-                     [&]() { controller_.servoOn(); });
-    QObject::connect(btnOff_, &QPushButton::clicked,
-                     [&]() { controller_.servoOff(); });
-    QObject::connect(btnHome_, &QPushButton::clicked,
-                     [&]() { controller_.home(); });
-    QObject::connect(btnSetPos_, &QPushButton::clicked,
-                     [&]() { controller_.setOriginPos(); });
-    QObject::connect(btnGetPos_, &QPushButton::clicked, [&]() {
-        AxisPositions pos{};
-        if (!controller_.getPos(pos)) {
-            logLine("Failed to read current positions.");
-            return;
-        }
-
-        QStringList parts;
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            parts << QString::fromStdString(controller_.axisName(i)) + ": " +
-                         QString::number(pos[i]);
-            if (i < axisInputs_.size()) {
-                axisInputs_[i]->setValue(pos[i]);
-            }
-        }
-        logLine("Current positions - " + parts.join(", "));
+    QObject::connect(btnOn_, &QPushButton::clicked, [&]() {
+        std::thread([this]() { controller_.servoOn(); }).detach();
     });
+
+    QObject::connect(btnOff_, &QPushButton::clicked, [&]() {
+        std::thread([this]() { controller_.servoOff(); }).detach();
+    });
+
+    QObject::connect(btnHome_, &QPushButton::clicked, [&]() {
+        std::thread([this]() { controller_.home(); }).detach();
+    });
+
+    QObject::connect(btnSetPos_, &QPushButton::clicked, [&]() {
+        std::thread([this]() { controller_.setOriginPos(); }).detach();
+    });
+
+    QObject::connect(btnGetPos_, &QPushButton::clicked, [&]() {
+        // Đưa đọc vị trí vào thread để không block UI nếu cáp lỏng/lag
+        std::thread([this]() {
+            AxisPositions pos{};
+            if (!controller_.getPos(pos)) {
+                QMetaObject::invokeMethod(this, [this]() { logLine("Failed to read current positions."); });
+                return;
+            }
+
+            // Gọi ngược lại UI thread để cập nhật giao diện
+            QMetaObject::invokeMethod(this, [this, pos]() {
+                QStringList parts;
+                for (size_t i = 0; i < AXIS_COUNT; ++i) {
+                    parts << QString::fromStdString(controller_.axisName(i)) + ": " + QString::number(pos[i]);
+                    if (i < axisInputs_.size()) {
+                        axisInputs_[i]->setValue(pos[i]);
+                    }
+                }
+                logLine("Current positions - " + parts.join(", "));
+            });
+        }).detach();
+    });
+
     QObject::connect(btnMove_, &QPushButton::clicked, [&]() {
         AxisPositions targets{};
         for (size_t i = 0; i < AXIS_COUNT; ++i) {
             targets[i] = axisInputs_[i]->value();
         }
-        controller_.movePos(targets);
+        std::thread([this, targets]() {
+            controller_.movePos(targets);
+        }).detach();
     });
+
     QObject::connect(btnModeToggle_, &QPushButton::clicked, [&]() {
         if (controller_.isSaveMode()) {
             controller_.setModeRecord();
@@ -218,42 +238,48 @@ void MainWindow::connectSignals() {
         else if (controller_.isFileMode()) {
             controller_.setModeSave();
             btnModeToggle_->setText("Mode: MANUAL SAVE");
-
         } 
         else {
             controller_.setModeFile();
             btnModeToggle_->setText("Mode: File");
         }
-
     });
+
     QObject::connect(filePathEdit_, &QLineEdit::editingFinished, [&]() {
-
         QString path = filePathEdit_->text();
-
-        if (path.isEmpty())
-            return;
-
+        if (path.isEmpty()) return;
         QString linuxPath = convertPathToLinux(path);
-
         controller_.setFileName(linuxPath.toStdString());
-
         logLine("File path saved: " + linuxPath);
     });
-    QObject::connect(btnGo_, &QPushButton::clicked, [&]() { controller_.go(); });
-    QObject::connect(btnRecord_, &QPushButton::clicked,
-                     [&]() { controller_.record(); });
-    QObject::connect(btnSavePos_, &QPushButton::clicked,
-                     [&]() { controller_.savePos(); });
-    QObject::connect(btnStop_, &QPushButton::clicked,
-                     [&]() { controller_.stop(); });
-    QObject::connect(btnClear_, &QPushButton::clicked,
-                     [&]() { controller_.clear(); });
-    QObject::connect(btnCamStart_, &QPushButton::clicked,
-                     [&]() { startUsbCamera(); });
-    QObject::connect(btnCamStop_, &QPushButton::clicked,
-                     [&]() { stopUsbCamera(); });
-    QObject::connect(cameraTimer_, &QTimer::timeout,
-                     [&]() { updateCameraFrame(); });
+
+    QObject::connect(btnGo_, &QPushButton::clicked, [&]() {
+        std::thread([this]() { controller_.go(); }).detach();
+    });
+
+    QObject::connect(btnRecord_, &QPushButton::clicked, [&]() { 
+        controller_.record(); 
+    });
+
+    QObject::connect(btnSavePos_, &QPushButton::clicked, [&]() {
+        std::thread([this]() { controller_.savePos(); }).detach();
+    });
+
+    QObject::connect(btnStop_, &QPushButton::clicked, [&]() {
+        btnStop_->setEnabled(false); // Tránh người dùng bấm spam liên tục
+        std::thread([this]() {
+            controller_.stop();
+            // Bật lại nút sau khi stop xong
+            QMetaObject::invokeMethod(this, [this]() { btnStop_->setEnabled(true); });
+        }).detach();
+    });
+
+    QObject::connect(btnClear_, &QPushButton::clicked, [&]() { 
+        controller_.clear(); 
+    });
+
+    QObject::connect(btnCamStart_, &QPushButton::clicked, [&]() { startUsbCamera(); });
+    QObject::connect(btnCamStop_, &QPushButton::clicked, [&]() { stopUsbCamera(); });
 }
 
 void MainWindow::logLine(const QString& text) {
@@ -274,121 +300,157 @@ void MainWindow::logDetections(const std::vector<Detection>& detections) {
 }
 
 void MainWindow::startUsbCamera() {
-    if (camera_.isOpen()) {
-        return;
+    if (g_cameraRunning.load()) {
+        return; // Camera đã đang chạy
     }
 
     const QFileInfo camDev(QString::fromUtf8(kUsbCameraDevice));
-    if (!camDev.exists()) {
-        logLine("Camera device not found: /dev/video0");
-        return;
-    }
-    if (!camDev.isReadable()) {
-        logLine("Camera device is not readable: /dev/video0");
+    if (!camDev.exists() || !camDev.isReadable()) {
+        logLine("Camera device not found or unreadable: /dev/video0");
         return;
     }
 
-    if (!camera_.openDevice(kUsbCameraDevice, 640, 480)) {
-        logLine(QString("Cannot open USB camera: /dev/video0 (%1)")
-                    .arg(QString::fromStdString(camera_.lastError())));
-        return;
-    }
+    g_cameraRunning.store(true);
+    btnCamStart_->setEnabled(false);
+    cameraPreview_->setText("Initializing Camera & AI...");
 
-    if (!detectorReady_) {
-        const QString modelPath = resolveModelPath();
-        if (!modelPath.isEmpty()) {
-            if (detector_.loadModel(modelPath.toStdString())) {
-                detectorReady_ = true;
-                logLine(QString("AI model loaded: %1").arg(modelPath));
-            } else {
-                logLine(QString("AI model load failed: %1")
-                            .arg(QString::fromStdString(detector_.lastError())));
-            }
-        } else {
-            logLine(QString("AI model not found: %1 (camera will run preview-only)")
-                        .arg(QString::fromUtf8(kDefaultModelPath)));
+    // LUỒNG CHUYÊN DỤNG CHO CAMERA & AI (Tránh đóng băng UI)
+    g_cameraThread = std::thread([this]() {
+        
+        // 1. Mở camera
+        if (!camera_.openDevice(kUsbCameraDevice, 640, 480)) {
+            QMetaObject::invokeMethod(this, [this]() {
+                logLine(QString("Cannot open USB camera: /dev/video0 (%1)").arg(QString::fromStdString(camera_.lastError())));
+                stopUsbCamera();
+            });
+            return;
         }
-    }
 
-    cameraPreview_->setText("Starting USB camera...");
-    cameraFrameFailCount_ = 0;
-    detectorFailCount_ = 0;
-    detectorNoDetectionCount_ = 0;
-    cameraTimer_->start();
-    logLine(QString("USB camera started: /dev/video0 (format %1)")
-                .arg(QString::fromStdString(camera_.formatName())));
+        // 2. Load Model AI
+        if (!detectorReady_) {
+            const QString modelPath = resolveModelPath();
+            if (!modelPath.isEmpty()) {
+                if (detector_.loadModel(modelPath.toStdString())) {
+                    detectorReady_ = true;
+                    QMetaObject::invokeMethod(this, [this, modelPath]() {
+                        logLine(QString("AI model loaded: %1").arg(modelPath));
+                    });
+                } else {
+                    QMetaObject::invokeMethod(this, [this]() {
+                        logLine(QString("AI model load failed: %1").arg(QString::fromStdString(detector_.lastError())));
+                    });
+                }
+            } else {
+                QMetaObject::invokeMethod(this, [this]() {
+                    logLine(QString("AI model not found: %1 (preview-only)").arg(QString::fromUtf8(kDefaultModelPath)));
+                });
+            }
+        }
+
+        QMetaObject::invokeMethod(this, [this]() {
+            logLine(QString("USB camera started: /dev/video0 (format %1)").arg(QString::fromStdString(camera_.formatName())));
+        });
+
+        int frameFailCount = 0;
+        int noDetectionCount = 0;
+        int detectFailCount = 0;
+
+        // 3. Vòng lặp lấy khung hình & chạy AI liên tục
+        while (g_cameraRunning.load()) {
+            cv::Mat frameBgr;
+            if (!camera_.readFrameBgr(frameBgr)) {
+                ++frameFailCount;
+                if (frameFailCount >= 30) {
+                    QMetaObject::invokeMethod(this, [this]() {
+                        logLine("Camera stopped after repeated frame failures.");
+                        stopUsbCamera();
+                    });
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+            frameFailCount = 0;
+
+            // Xử lý AI
+            if (detectorReady_) {
+                std::vector<Detection> detections;
+                if (detector_.detect(frameBgr, detections)) {
+                    if (!detections.empty()) {
+                        // Gọi an toàn về UI thread để log
+                        QMetaObject::invokeMethod(this, [this, detections]() {
+                            logDetections(detections);
+                        });
+                        noDetectionCount = 0;
+                    } else {
+                        ++noDetectionCount;
+                        if (noDetectionCount == 1 || noDetectionCount % 120 == 0) {
+                            QMetaObject::invokeMethod(this, [this]() {
+                                logLine("AI inference active: no detections in current frames.");
+                            });
+                        }
+                    }
+                    detector_.drawDetections(frameBgr, detections);
+                    detectFailCount = 0;
+                } else {
+                    ++detectFailCount;
+                    if (detectFailCount == 1 || detectFailCount % 60 == 0) {
+                        QMetaObject::invokeMethod(this, [this]() {
+                            logLine(QString("AI detect failed: %1").arg(QString::fromStdString(detector_.lastError())));
+                        });
+                    }
+                }
+            }
+
+            // Chuyển đổi sang QImage và sao chép sâu (deep copy) để truyền an toàn qua UI Thread
+            QImage frameImg = UsbCamera::bgrToQImage(frameBgr).copy();
+
+            // Gửi hình lên GUI
+            QMetaObject::invokeMethod(this, [this, frameImg]() {
+                if (cameraPreview_ && g_cameraRunning.load()) {
+                    cameraPreview_->setPixmap(
+                        QPixmap::fromImage(frameImg).scaled(cameraPreview_->size(),
+                                                            Qt::KeepAspectRatio,
+                                                            Qt::SmoothTransformation));
+                }
+            }, Qt::QueuedConnection);
+
+            // Nghỉ 1 chút để không chiếm 100% CPU thread
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        }
+
+        // 4. Giải phóng camera khi thoát vòng lặp
+        camera_.closeDevice();
+    });
 }
 
 void MainWindow::stopUsbCamera() {
-    if (cameraTimer_) {
-        cameraTimer_->stop();
+    if (!g_cameraRunning.load()) {
+        return;
     }
-    camera_.closeDevice();
-    cameraFrameFailCount_ = 0;
-    detectorFailCount_ = 0;
-    detectorNoDetectionCount_ = 0;
+
+    g_cameraRunning.store(false); // Báo hiệu cho vòng lặp dừng lại
+
+    // Đợi luồng camera tắt hẳn
+    if (g_cameraThread.joinable()) {
+        g_cameraThread.join();
+    }
 
     if (cameraPreview_) {
         cameraPreview_->setPixmap(QPixmap());
         cameraPreview_->setText("Camera Preview");
     }
+    
+    btnCamStart_->setEnabled(true);
+    logLine("Camera stream stopped.");
 }
 
-void MainWindow::updateCameraFrame() {
-    cv::Mat frameBgr;
-    if (!camera_.readFrameBgr(frameBgr)) {
-        ++cameraFrameFailCount_;
-        if (cameraFrameFailCount_ == 30) {
-            logLine(QString("Camera opened but no frame received from /dev/video0 (%1)")
-                        .arg(QString::fromStdString(camera_.lastError())));
-            stopUsbCamera();
-            logLine("Camera stopped after repeated frame failures.");
-        }
-        return;
-    }
-    cameraFrameFailCount_ = 0;
-
-    if (detectorReady_) {
-        std::vector<Detection> detections;
-        if (detector_.detect(frameBgr, detections)) {
-            if (!detections.empty()) {
-                logDetections(detections);
-                detectorNoDetectionCount_ = 0;
-            } else {
-                ++detectorNoDetectionCount_;
-                if (detectorNoDetectionCount_ == 1 || detectorNoDetectionCount_ % 120 == 0) {
-                    logLine("AI inference active: no detections in current frames.");
-                }
-            }
-            detector_.drawDetections(frameBgr, detections);
-            detectorFailCount_ = 0;
-        } else {
-            ++detectorFailCount_;
-            if (detectorFailCount_ == 1 || detectorFailCount_ % 60 == 0) {
-                logLine(QString("AI detect failed: %1")
-                            .arg(QString::fromStdString(detector_.lastError())));
-            }
-        }
-    }
-
-    QImage frame = UsbCamera::bgrToQImage(frameBgr);
-    cameraPreview_->setPixmap(
-        QPixmap::fromImage(frame).scaled(cameraPreview_->size(),
-                                         Qt::KeepAspectRatio,
-                                         Qt::SmoothTransformation));
-}
-
-QString MainWindow::convertPathToLinux(const QString& path)
-{
+QString MainWindow::convertPathToLinux(const QString& path) {
     QString p = path;
-
     p.replace("\\", "/");
-
-    if (p.length() > 2 && p[1] == ':')
-    {
+    if (p.length() > 2 && p[1] == ':') {
         QChar drive = p[0].toLower();
         p = "/mnt/" + QString(drive) + p.mid(2);
     }
-
     return p;
 }

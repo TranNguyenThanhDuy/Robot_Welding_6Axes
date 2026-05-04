@@ -14,8 +14,13 @@
 #include <QString>
 #include <QStringList>
 #include <QVBoxLayout>
+<<<<<<< HEAD
 #include <QMetaObject> // Thêm thư viện này để giao tiếp giữa các luồng
 #include <QLineEdit>
+=======
+#include <QFileDialog> // Thư viện mở cửa sổ chọn file
+#include <thread>
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
 
 #include <opencv2/core/mat.hpp>
 
@@ -122,7 +127,7 @@ void MainWindow::buildUi() {
 
     auto* motionButtons = new QHBoxLayout();
     btnMove_ = new QPushButton("MovePos");
-    btnGo_ = new QPushButton("Go (Recorded)");
+    btnGo_ = new QPushButton("Go (Recorded/File)");
     btnModeToggle_ = new QPushButton("Mode: AUTO RECORD");
     btnModeToggle_->setCheckable(true);
     btnRecord_ = new QPushButton("Record");
@@ -144,9 +149,13 @@ void MainWindow::buildUi() {
 
     filePathEdit_ = new QLineEdit();
     filePathEdit_->setPlaceholderText("Enter file path...");
+    
+    // Giao diện chọn file
+    btnBrowseFile_ = new QPushButton("Browse...");
 
     fileLayout->addWidget(new QLabel("Path:"));
     fileLayout->addWidget(filePathEdit_);
+    fileLayout->addWidget(btnBrowseFile_);
 
     root->addWidget(fileBox);
 
@@ -181,6 +190,7 @@ void MainWindow::buildUi() {
 }
 
 void MainWindow::connectSignals() {
+<<<<<<< HEAD
     QObject::connect(btnOn_, &QPushButton::clicked, [&]() {
         std::thread([this]() { controller_.servoOn(); }).detach();
     });
@@ -220,16 +230,53 @@ void MainWindow::connectSignals() {
         }).detach();
     });
 
+=======
+    QObject::connect(btnOn_, &QPushButton::clicked,
+                     [&]() { controller_.servoOn(); });
+    QObject::connect(btnOff_, &QPushButton::clicked,
+                     [&]() { controller_.servoOff(); });
+    QObject::connect(btnHome_, &QPushButton::clicked,
+                     [&]() { std::thread([this]() { controller_.home(); }).detach(); });
+    QObject::connect(btnSetPos_, &QPushButton::clicked,
+                     [&]() { controller_.setOriginPos(); });
+    QObject::connect(btnGetPos_, &QPushButton::clicked, [&]() {
+        AxisPositions pos{};
+        if (!controller_.getPos(pos)) {
+            logLine("Failed to read current positions.");
+            return;
+        }
+
+        QStringList parts;
+        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+            parts << QString::fromStdString(controller_.axisName(i)) + ": " +
+                         QString::number(pos[i]);
+            if (i < axisInputs_.size()) {
+                axisInputs_[i]->setValue(pos[i]);
+            }
+        }
+        logLine("Current positions - " + parts.join(", "));
+    });
+
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     QObject::connect(btnMove_, &QPushButton::clicked, [&]() {
         AxisPositions targets{};
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        for (size_t i = 0; i < AXIS_COUNT; ++i)
             targets[i] = axisInputs_[i]->value();
+<<<<<<< HEAD
         }
         std::thread([this, targets]() {
             controller_.movePos(targets);
         }).detach();
     });
 
+=======
+
+        std::thread([=]() {
+            controller_.movePos(targets);
+        }).detach();
+    });
+    
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     QObject::connect(btnModeToggle_, &QPushButton::clicked, [&]() {
         if (controller_.isSaveMode()) {
             controller_.setModeRecord();
@@ -245,14 +292,24 @@ void MainWindow::connectSignals() {
         }
     });
 
+<<<<<<< HEAD
     QObject::connect(filePathEdit_, &QLineEdit::editingFinished, [&]() {
         QString path = filePathEdit_->text();
         if (path.isEmpty()) return;
+=======
+    // Xử lý khi người dùng tự gõ tay hoặc dán link vào ô LineEdit rồi ấn Enter
+    QObject::connect(filePathEdit_, &QLineEdit::editingFinished, [&]() {
+        QString path = filePathEdit_->text();
+        if (path.isEmpty())
+            return;
+
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
         QString linuxPath = convertPathToLinux(path);
         controller_.setFileName(linuxPath.toStdString());
         logLine("File path saved: " + linuxPath);
     });
 
+<<<<<<< HEAD
     QObject::connect(btnGo_, &QPushButton::clicked, [&]() {
         std::thread([this]() { controller_.go(); }).detach();
     });
@@ -280,6 +337,56 @@ void MainWindow::connectSignals() {
 
     QObject::connect(btnCamStart_, &QPushButton::clicked, [&]() { startUsbCamera(); });
     QObject::connect(btnCamStop_, &QPushButton::clicked, [&]() { stopUsbCamera(); });
+=======
+    // Xử lý khi bấm nút Browse (Chọn File)
+    QObject::connect(btnBrowseFile_, &QPushButton::clicked, [this]() {
+        // Tự động nhảy vào ổ C của Windows
+        QString startPath = QDir::currentPath();
+        if (QDir("/mnt/c/Users/").exists()) {
+            startPath = "/mnt/c/Users/";
+        }
+
+        QString filePath = QFileDialog::getOpenFileName(
+            this, 
+            "Chọn file toạ độ (Trajectory File)", 
+            startPath, 
+            "Text Files (*.txt);;All Files (*)"
+        );
+
+        if (!filePath.isEmpty()) {
+            QString linuxPath = convertPathToLinux(filePath);
+            filePathEdit_->setText(linuxPath); // Cập nhật lên ô text
+            controller_.setFileName(linuxPath.toStdString()); // Gửi xuống hệ thống
+            logLine("Đã tải thành công file: " + linuxPath);
+        }
+    });
+
+    // Cập nhật tính năng Auto-Update trên nút "Go"
+    QObject::connect(btnGo_, &QPushButton::clicked, [this]() { 
+        // Lấy lại text mới nhất đề phòng người dùng copy dán nhưng chưa ấn Enter
+        QString path = filePathEdit_->text();
+        if (!path.isEmpty()) {
+            QString linuxPath = convertPathToLinux(path);
+            controller_.setFileName(linuxPath.toStdString());
+        }
+        std::thread([this]() { controller_.go(); }).detach(); 
+    });
+
+    QObject::connect(btnRecord_, &QPushButton::clicked,
+                     [&]() { controller_.record(); });
+    QObject::connect(btnSavePos_, &QPushButton::clicked,
+                     [&]() { controller_.savePos(); });
+    QObject::connect(btnStop_, &QPushButton::clicked,
+                     [&]() { controller_.stop(); });
+    QObject::connect(btnClear_, &QPushButton::clicked,
+                     [&]() { controller_.clear(); });
+    QObject::connect(btnCamStart_, &QPushButton::clicked,
+                     [&]() { startUsbCamera(); });
+    QObject::connect(btnCamStop_, &QPushButton::clicked,
+                     [&]() { stopUsbCamera(); });
+    QObject::connect(cameraTimer_, &QTimer::timeout,
+                     [&]() { updateCameraFrame(); });
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
 }
 
 void MainWindow::logLine(const QString& text) {

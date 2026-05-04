@@ -89,6 +89,10 @@ AxisController::~AxisController() {
 }
 
 constexpr size_t MAX_BUFFERS = 8;
+<<<<<<< HEAD
+=======
+// AxisVectorsEx recorded_positions;
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
 std::mutex rec_mtx;
 std::thread rec_thread;
 
@@ -112,6 +116,10 @@ AxisVectorsEx downsampleBuffer(
 
     size_t len = in[0].size();
     for (size_t i = 0; i < len; i += step) {
+<<<<<<< HEAD
+=======
+        // 👇 FIX: Đổi thành EXT_AXIS_COUNT
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
         for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
             out[a].push_back(in[a][i]);
         }
@@ -287,7 +295,11 @@ AxisVectorsEx compressBuffer(
     int minTrendLen
 ) {
     AxisVectorsEx out;
+<<<<<<< HEAD
     if (in[0].empty()) return out; 
+=======
+    if (in[0].empty()) return out; // Thêm check an toàn
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     
     size_t N = in[0].size();
     if (N < 2) return in;
@@ -319,6 +331,10 @@ AxisVectorsEx compressBuffer(
         keep[N - 1] = true;
     }
 
+<<<<<<< HEAD
+=======
+    // Luôn giữ lại các điểm mà tín hiệu I/O thay đổi trạng thái
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     for (size_t i = 1; i < N; ++i) {
         if (in[AXIS_COUNT][i] != in[AXIS_COUNT][i - 1]) {
             keep[i] = true;
@@ -328,6 +344,10 @@ AxisVectorsEx compressBuffer(
 
     for (size_t i = 0; i < N; ++i) {
         if (!keep[i]) continue;
+<<<<<<< HEAD
+=======
+        // 👇 FIX QUAN TRỌNG: Phải lặp đến EXT_AXIS_COUNT
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
         for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) { 
             out[a].push_back(in[a][i]);
         }
@@ -412,8 +432,14 @@ void AxisController::recordingThread() {
     constexpr int RECORD_PERIOD_MS = 10;
     while (recording_.load()) {
         AxisPositions pos{};
+<<<<<<< HEAD
         bool inputSignal = false;
 
+=======
+        bool inputSignal = false; // <-- Thêm
+
+        // 👇 Cập nhật điều kiện đọc
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
         if (!readActualPositions(pos) || !readInputSignal(inputSignal)) { 
             std::this_thread::sleep_for(std::chrono::milliseconds(RECORD_PERIOD_MS));
             continue;
@@ -424,6 +450,10 @@ void AxisController::recordingThread() {
             for (size_t i = 0; i < AXIS_COUNT; ++i) {
                 recorded_positions_[i].push_back(pos[i]);
             }
+<<<<<<< HEAD
+=======
+            // 👇 Lưu control bit vào mảng
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
             recorded_positions_[AXIS_COUNT].push_back(inputSignal ? 1 : 0);
         }
 
@@ -431,6 +461,10 @@ void AxisController::recordingThread() {
     }
 }
 
+<<<<<<< HEAD
+=======
+// BỔ SUNG: Hàm stopRecordingThread() để khắc phục lỗi undefined reference
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
 void AxisController::stopRecordingThread() {
     if (recording_.load()) {
         recording_.store(false);
@@ -509,6 +543,10 @@ bool AxisController::goWithBuffer(const AxisVectorsEx& paths)
 
     motion_thread = std::thread(&AxisController::motionThreadFunc, this);
     
+<<<<<<< HEAD
+=======
+    // đợi chạy xong (Đã xóa dòng bool done = false; ở đây để hết bị warning)
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     while (true) {
         bool idle = planner.isEmpty();
         bool plannerFinished = planner_done.load();
@@ -573,6 +611,10 @@ bool AxisController::goFromFile(const std::string& filename)
             compatiblePaths[i].push_back(row[i]);
         }
         
+<<<<<<< HEAD
+=======
+        // Nếu file có lưu cột IO thì lấy, không thì mặc định là 0 (để tránh lỗi Segfault)
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
         if (row.size() >= EXT_AXIS_COUNT) {
             compatiblePaths[AXIS_COUNT].push_back(row[AXIS_COUNT]);
         } else {
@@ -809,7 +851,11 @@ bool AxisController::savePos() {
         return false;
     }
 
+<<<<<<< HEAD
     bool inputSignal = false;         
+=======
+    bool inputSignal = false;         // <-- Thêm
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     readInputSignal(inputSignal);
 
     std::lock_guard<std::mutex> lk(rec_mtx_);
@@ -825,6 +871,11 @@ bool AxisController::savePos() {
         if (i + 1 < AXIS_COUNT) std::cout << ", ";
     }
     std::cout << std::endl;
+<<<<<<< HEAD
+=======
+    // --- APPEND TO savePos.txt ---
+    AxisVectorsEx temp;
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
 
     AxisVectorsEx temp;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
@@ -1081,6 +1132,10 @@ bool AxisController::writeBufferToFile(const std::string& filename,
     return true;
 }
 
+<<<<<<< HEAD
+=======
+// Thay AxisVectorsEx bằng AxisVectorsEx
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
 void AxisController::fillPlannerBuffer(const AxisVectorsEx& paths) 
 {
     AxisPositions current{};
@@ -1090,6 +1145,13 @@ void AxisController::fillPlannerBuffer(const AxisVectorsEx& paths)
     {
         while (planner.isFull()) {
             if (!motion_running.load()) return;
+<<<<<<< HEAD
+=======
+            {
+                std::lock_guard<std::mutex> lk(planner.mtx);
+                if (!planner.isFullUnsafe()) break;
+            }
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
@@ -1101,7 +1163,13 @@ void AxisController::fillPlannerBuffer(const AxisVectorsEx& paths)
             hasCommand[a] = true;
         }
 
+<<<<<<< HEAD
         block.relay_state = (paths[AXIS_COUNT][i] != 0);
+=======
+        // 👇 THÊM: Đọc tín hiệu IO từ paths (cột AXIS_COUNT)
+        block.relay_state = (paths[AXIS_COUNT][i] != 0);
+
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
         block.velocity = computeVelocities(current, block.target, hasCommand);
 
         current = block.target;
@@ -1111,7 +1179,10 @@ void AxisController::fillPlannerBuffer(const AxisVectorsEx& paths)
             return;
         }
     }
+<<<<<<< HEAD
 
+=======
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     planner_done.store(true);
 }
 
@@ -1134,6 +1205,7 @@ void AxisController::motionThreadFunc()
             continue;
         }
 
+<<<<<<< HEAD
         // BẮT LỆNH RELAY THAY ĐỔI HOẶC CHẠY LẦN ĐẦU
         if (firstBlock || block.relay_state != lastRelayState) {
             std::cout << ">> [MOTION] Yeu cau IO thay doi -> " << (block.relay_state ? "ON" : "OFF") << std::endl;
@@ -1146,6 +1218,10 @@ void AxisController::motionThreadFunc()
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
 
+=======
+        setRelay(block.relay_state);
+        // gửi lệnh
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
             FAS_MoveSingleAxisAbsPos(
                 nPortIDs_[a],
@@ -1189,11 +1265,16 @@ bool AxisController::readInputRisingEdge(bool& triggered)
 {
     bool current = false;
     if (!readInputSignal(current)) return false;
+<<<<<<< HEAD
+=======
+    // 👇 Sử dụng biến thành viên last_input_signal_ thay vì biến toàn cục
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892
     triggered = (!last_input_signal_ && current);
     last_input_signal_ = current;
     return true;
 }
 
+<<<<<<< HEAD
 bool AxisController::readInputSignal(bool& signal)
 {
     DWORD input;
@@ -1234,3 +1315,40 @@ bool AxisController::setRelay(bool on)
 
     return res == FMM_OK;
 }
+=======
+
+
+// Các hàm readInputSignal và setRelay giữ nguyên vì đã đúng ý bạn:
+
+bool AxisController::readInputSignal(bool& signal)
+{
+    DWORD input;
+    if (FAS_GetIOInput(nPortIDs_[0], iSlaveNos_[0], &input) != FMM_OK)
+        return false;
+    signal = (input & (1 << DI_INDEX)) != 0;
+    return true;
+}
+
+bool AxisController::setRelay(bool on)
+{
+    if (on)
+    {
+        return FAS_SetOutput(
+            nPortIDs_[0],
+            iSlaveNos_[0],
+            (1 << DO_INDEX),  // set bit
+            0                 // không clear
+        ) == FMM_OK;
+
+    }
+    else
+    {
+        return FAS_SetOutput(
+            nPortIDs_[0],
+            iSlaveNos_[0],
+            0,                // không set
+            (1 << DO_INDEX)   // clear bit
+        ) == FMM_OK;
+    }
+}
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892

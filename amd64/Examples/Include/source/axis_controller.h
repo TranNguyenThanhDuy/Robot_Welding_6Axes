@@ -146,4 +146,8 @@ private:
     
     // THÊM: Biến lưu trữ trạng thái I/O trước đó cho hàm RisingEdge
     bool last_input_signal_ = false;
+<<<<<<< HEAD
 };
+=======
+};
+>>>>>>> 70960b4d32ee2bffed3c5bf0db489811d3e69892

@@ -6,7 +6,7 @@ import numpy as np
 from matplotlib.widgets import Button, Slider, TextBox
 
 from .constants import THETA2_OFFSET
-from .conversions import clamp_joint_angles, get_joint_angle_limits, normalize_angle
+from .conversions import MappingIKError, clamp_joint_angles, get_joint_angle_limits, normalize_angle
 from .io_utils import export_angle_sets_to_txt, forward_kinematics_from_encoder_file_all
 from .kinematics import Forward_Kinematics, Inverse_Kinematics, forward_points
 from .trajectory import export_line_mapping_from_encoder_file, export_line_mapping_from_xyz_file
@@ -121,6 +121,24 @@ def run_slider_ui():
         messagebox.showinfo("Info", message, parent=root)
         root.destroy()
 
+    def format_mapping_error(exc, mode_name):
+        if isinstance(exc, MappingIKError):
+            lines = [f"{mode_name} failed during IK."]
+            if exc.point_index is not None:
+                lines.append(f"Point index: {exc.point_index} (point #{exc.point_index + 1})")
+            if exc.point is not None and exc.point.size == 3:
+                lines.append(f"XYZ target: {exc.point[0]:.3f}, {exc.point[1]:.3f}, {exc.point[2]:.3f}")
+            if exc.status is not None:
+                lines.append(f"IK status: {exc.status}")
+            if exc.status == "OOW":
+                lines.append("Hint: target point or tool orientation is outside reachable workspace.")
+            elif exc.status == "FAIL":
+                lines.append("Hint: position may be reachable, but current orientation or joint limits make IK invalid.")
+            elif exc.status == "NO_MATCH":
+                lines.append("Hint: IK found a pose, but it was too far from the previous joint state.")
+            return "\n".join(lines)
+        return str(exc)
+
     def set_mode(mode):
         file_state["mode"] = mode
         if mode == "teach":
@@ -181,7 +199,7 @@ def run_slider_ui():
             exported_file_path, _ = export_angle_sets_to_txt(file_path)
             results = forward_kinematics_from_encoder_file_all(file_path)
         except Exception as exc:
-            show_warning(str(exc))
+            show_warning(format_mapping_error(exc, "Teach"))
             return
         file_state["path"] = file_path
         file_state["is_running"] = True
@@ -210,7 +228,7 @@ def run_slider_ui():
         try:
             mapping = export_line_mapping_from_encoder_file(file_path)
         except Exception as exc:
-            show_warning(str(exc))
+            show_warning(format_mapping_error(exc, "Line Map"))
             return
         file_state["path"] = file_path
         file_state["is_running"] = True
@@ -243,7 +261,7 @@ def run_slider_ui():
         try:
             mapping = export_line_mapping_from_xyz_file(file_path, reference_angles=file_state["current_q"])
         except Exception as exc:
-            show_warning(str(exc))
+            show_warning(format_mapping_error(exc, "XYZ"))
             return
         file_state["path"] = file_path
         file_state["is_running"] = True

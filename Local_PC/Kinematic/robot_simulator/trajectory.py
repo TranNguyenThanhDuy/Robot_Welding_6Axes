@@ -10,6 +10,7 @@ from .conversions import (
     convert_ik_angles_to_display_angles,
     encoder_pulses_to_angles,
     ensure_output_dir,
+    normalize_angle,
 )
 from .io_utils import (
     export_mapped_pulses_to_txt,
@@ -17,7 +18,26 @@ from .io_utils import (
     forward_kinematics_from_encoder_file_all,
     load_xyz_waypoints_from_txt,
 )
-from .kinematics import Inverse_Kinematics, forward_kinematics_from_joint_angles
+from .kinematics import Check_T_0_6, Inverse_Kinematics, forward_kinematics_from_joint_angles
+
+
+class MappingIKError(ValueError):
+    def __init__(self, mode, point_index=None, point=None, status=None, message=None):
+        self.mode = mode
+        self.point_index = point_index
+        self.point = None if point is None else np.array(point, dtype=float).flatten()
+        self.status = status
+        super().__init__(message or self._build_message())
+
+    def _build_message(self):
+        pieces = [f"{self.mode}: IK failed"]
+        if self.point_index is not None:
+            pieces.append(f"at point #{int(self.point_index) + 1}")
+        if self.status:
+            pieces.append(f"status={self.status}")
+        if self.point is not None and self.point.size == 3:
+            pieces.append(f"XYZ=({self.point[0]:.3f}, {self.point[1]:.3f}, {self.point[2]:.3f})")
+        return " | ".join(pieces)
 
 
 def build_piecewise_segments_from_cartesian_points(points):
@@ -161,6 +181,27 @@ generate_polyline_samples = generate_polyline_position_samples
 generate_polyline_targets = generate_polyline_position_rotation_targets
 
 
+def generate_segment_start_rotation_targets(rotations, num_samples_per_segment=LINE_MAPPING_SAMPLES_PER_SEGMENT):
+    rotation_array = np.array(rotations, dtype=float)
+    if rotation_array.ndim != 3 or rotation_array.shape[1:] != (3, 3):
+        raise ValueError("Expected rotations with shape (N, 3, 3).")
+    if len(rotation_array) < 2:
+        raise ValueError("At least 2 waypoint rotations are required.")
+
+    polyline_rotations = [rotation_array[0].copy()]
+    waypoint_indices = [0]
+    for idx in range(len(rotation_array) - 1):
+        start_rotation = rotation_array[idx]
+        end_rotation = rotation_array[idx + 1]
+        for sample_idx in range(1, num_samples_per_segment + 1):
+            if sample_idx == num_samples_per_segment:
+                polyline_rotations.append(end_rotation.copy())
+            else:
+                polyline_rotations.append(start_rotation.copy())
+        waypoint_indices.append(len(polyline_rotations) - 1)
+    return np.array(polyline_rotations, dtype=float), np.array(waypoint_indices, dtype=int)
+
+
 def cartesian_polyline_to_joint_trajectory(
     cartesian_points,
     target_rotations,
@@ -205,8 +246,20 @@ def cartesian_polyline_to_joint_trajectory(
             continue
         ik_result = Inverse_Kinematics(point, target_rotations[point_idx], current_angles=current_angles, angle_tolerance=angle_tolerance, debug=debug)
         if ik_result["status"] not in {"OK", "NO_MATCH"} or ik_result.get("solution") is None:
-            raise ValueError(f"IK failed at polyline point index {point_idx} with status {ik_result['status']}.")
-        current_angles = np.array(ik_result["solution"], dtype=float)
+            ik_result = Inverse_Kinematics(point, target_rotations[point_idx], current_angles=None, angle_tolerance=angle_tolerance, debug=debug)
+
+        if ik_result["status"] not in {"OK", "NO_MATCH"} or ik_result.get("solution") is None:
+            raise MappingIKError(mode="Polyline", point_index=point_idx, point=point, status=ik_result.get("status"))
+
+        solution_angles = np.array(ik_result["solution"], dtype=float)
+        if abs(solution_angles[4]) < 1.0:
+            preserved_solution = solution_angles.copy()
+            preserved_solution[3] = current_angles[3]
+            preserved_solution[5] = normalize_angle(solution_angles[3] + solution_angles[5] - preserved_solution[3])
+            if are_joint_angles_within_limits(preserved_solution) and Check_T_0_6(point, target_rotations[point_idx], *preserved_solution):
+                solution_angles = preserved_solution
+
+        current_angles = solution_angles
         joint_trajectory.append(current_angles.copy())
     return np.array(joint_trajectory, dtype=float)
 
@@ -236,14 +289,33 @@ def build_line_mapping_from_encoder_file(
         num_samples_per_segment=num_samples_per_segment,
     )
     fixed_waypoint_angles = {int(polyline_idx): raw_angles_ik[waypoint_idx].copy() for waypoint_idx, polyline_idx in enumerate(waypoint_indices)}
-    mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
-        mapped_positions,
-        mapped_rotations,
-        initial_angles,
-        fixed_waypoint_angles=fixed_waypoint_angles,
-        angle_tolerance=angle_tolerance,
-        debug=debug,
-    )
+    try:
+        mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
+            mapped_positions,
+            mapped_rotations,
+            initial_angles,
+            fixed_waypoint_angles=fixed_waypoint_angles,
+            angle_tolerance=angle_tolerance,
+            debug=debug,
+        )
+        rotation_strategy = "segment_slerp"
+    except MappingIKError as exc:
+        fallback_rotations, fallback_waypoint_indices = generate_segment_start_rotation_targets(
+            raw_rotations,
+            num_samples_per_segment=num_samples_per_segment,
+        )
+        if not np.array_equal(fallback_waypoint_indices, waypoint_indices):
+            raise ValueError("Internal error: fallback waypoint indices do not match the polyline layout.") from exc
+        mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
+            mapped_positions,
+            fallback_rotations,
+            initial_angles,
+            fixed_waypoint_angles=fixed_waypoint_angles,
+            angle_tolerance=angle_tolerance,
+            debug=debug,
+        )
+        mapped_rotations = fallback_rotations
+        rotation_strategy = "segment_start_fallback"
     mapped_angles = convert_ik_angles_to_display_angles(mapped_angles_ik)
     mapped_pulses = np.array([angles_to_encoder_pulses(angles, ppr=ppr, gearbox_ratios=gearbox_ratios) for angles in mapped_angles], dtype=int)
     for waypoint_idx, polyline_idx in enumerate(waypoint_indices):
@@ -269,6 +341,7 @@ def build_line_mapping_from_encoder_file(
         "waypoint_indices": waypoint_indices,
         "segment_lengths": segment_lengths,
         "num_samples_per_segment": int(num_samples_per_segment),
+        "rotation_strategy": rotation_strategy,
     }
 
 
@@ -348,7 +421,16 @@ def build_line_mapping_from_xyz_points(
     initial_angles_ik = convert_display_angles_to_ik_angles(reference_angles)
     first_point_ik = Inverse_Kinematics(mapped_positions[0], fixed_rotation, current_angles=initial_angles_ik, angle_tolerance=angle_tolerance, debug=debug)
     if first_point_ik["status"] not in {"OK", "NO_MATCH"} or first_point_ik.get("solution") is None:
-        raise ValueError(f"IK failed at first XYZ waypoint with status {first_point_ik['status']}.")
+        raise MappingIKError(
+            mode="XYZ",
+            point_index=0,
+            point=mapped_positions[0],
+            status=first_point_ik.get("status"),
+            message=(
+                f"XYZ: IK failed at first waypoint | status={first_point_ik.get('status')} | "
+                f"XYZ=({mapped_positions[0][0]:.3f}, {mapped_positions[0][1]:.3f}, {mapped_positions[0][2]:.3f})"
+            ),
+        )
 
     fixed_waypoint_angles = {0: np.array(first_point_ik["solution"], dtype=float).copy()}
     mapped_angles_ik = cartesian_polyline_to_joint_trajectory(

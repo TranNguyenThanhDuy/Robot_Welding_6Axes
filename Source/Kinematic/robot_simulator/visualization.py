@@ -56,7 +56,7 @@ def plot_robot(
     if trace_points is not None and len(trace_points) > 0:
         trace_points = np.array(trace_points, dtype=float)
         ax.plot(trace_points[:, 0], trace_points[:, 1], trace_points[:, 2], color="#d62728", linewidth=2, alpha=0.9)
-        ax.scatter(trace_points[:, 0], trace_points[:, 1], trace_points[:, 2], color="#d62728", s=10, depthshade=False)
+        ax.scatter(trace_points[:, 0], trace_points[:, 1], trace_points[:, 2], color="#d62728", s=2, depthshade=False)
 
     ax.set_title(title)
     ax.set_xlabel("X (mm)")
@@ -82,6 +82,7 @@ def animate_jog(q_start, q_end, steps=80, interval=0.02, use_offset=True):
 
 
 def sample_trace_positions(q_start, q_end, num_samples=25):
+    """Lay mau vi tri end-effector giua hai bo goc de ve trace."""
     q_start = np.array(q_start, dtype=float).flatten()
     q_end = np.array(q_end, dtype=float).flatten()
     if q_start.size != 6 or q_end.size != 6:

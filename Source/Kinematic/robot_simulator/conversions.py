@@ -62,6 +62,27 @@ def ensure_output_dir(directory):
     return directory
 
 
+class MappingIKError(ValueError):
+    def __init__(self, mode, point_index=None, point=None, status=None, message=None):
+        self.mode = mode
+        self.point_index = point_index
+        self.point = None if point is None else np.array(point, dtype=float).flatten()
+        self.status = status
+        super().__init__(message or self._build_message())
+
+    def _build_message(self):
+        pieces = [f"{self.mode}: IK failed"]
+        if self.point_index is not None:
+            pieces.append(f"at point #{int(self.point_index) + 1}")
+        if self.status:
+            pieces.append(f"status={self.status}")
+        if self.point is not None and self.point.size == 3:
+            pieces.append(
+                f"XYZ=({self.point[0]:.3f}, {self.point[1]:.3f}, {self.point[2]:.3f})"
+            )
+        return " | ".join(pieces)
+
+
 def encoder_pulse_to_angle(pos_servo, ppr=ENCODER_PPR, gearbox_ratio=1.0):
     if ppr == 0:
         raise ValueError("ENCODER_PPR must be non-zero.")

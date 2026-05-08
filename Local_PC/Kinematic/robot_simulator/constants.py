@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 
 
@@ -44,6 +46,10 @@ WORKSPACE_POINT_SIZE = 10
 WORKSPACE_SAMPLED_JOINTS = (0, 1, 2)
 WORKSPACE_FIXED_ANGLES = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
 
-TEACH_OUTPUT_DIR = "teach_outputs"
-LINE_MAPPING_OUTPUT_DIR = "line_mapping_outputs"
-XYZ_OUTPUT_DIR = "xyz_outputs"
+_ROBOT_SIMULATOR_DIR = Path(__file__).resolve().parent
+_KINEMATIC_DIR = _ROBOT_SIMULATOR_DIR.parent
+_LOCAL_PC_DIR = _KINEMATIC_DIR.parent
+
+TEACH_OUTPUT_DIR = str(_KINEMATIC_DIR / "teach_outputs")
+LINE_MAPPING_OUTPUT_DIR = str(_LOCAL_PC_DIR / "line_mapping_outputs")
+XYZ_OUTPUT_DIR = str(_KINEMATIC_DIR / "xyz_outputs")

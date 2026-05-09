@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "EZI-Servo Plus-R RS485 Test",
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"minmax.h": "c"
+		}
+	}
+}

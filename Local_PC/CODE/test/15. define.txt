@@ -1,0 +1,149 @@
+// ###########################################################################
+//	AUTHOR: HUỲNH QUỐC TOÀN
+//   PROJECT: 6-DOF ARM ROBOT USE RS-485 & TCP/IP PROTOCOL
+//   MCU: ESP32-32U
+//   DESCRIPTION:
+//     * Hardware:
+//       - Use Ezi-Servo Plus-R Series of FASTECH
+//       - Use 6 Driver (4 Driver EzS-NDR-60L and 2 Drivers EzS-NDR-60M)
+//       - Use 6 Servo (4 Servo EzM-60L-A-D and 2 Servo EzM-60M-A-D)
+//       - Use 2 Brake 24V for Servo Joint 2 and Joint 3
+//    * Software:
+//       - Communication with 6-Drivers via RS-485 Protocol
+//       - Communication with PLC and etc... via TCP/IP Protocol
+//       - Use PlatformIO on VSCode
+// ###########################################################################
+
+//===========================================================================
+//	INCLUDE LIBRARIES
+//===========================================================================
+#include <Arduino.h>
+#include <ArduinoEigenDense.h>
+#include <math.h>
+#include <../SERVO/Communication_Interface.h>
+#include <../FORWARD_KINEMATIC/Convert_Function.h>
+
+float d0 = 228, L1 = 55, L2 = 330, L3 = 62, d1 = 330, d2 = 201;
+float POS = 90, NEG = -90;
+float theta1 = 0, theta2 = 0, theta3 = 0, theta4 = 0, theta5 = 0, theta6 = 0;
+float theta1_old = 0, theta2_old = 0, theta3_old = 0, theta4_old = 0, theta5_old = 0, theta6_old = 0;
+float theta1_FK = 0, theta2_FK = 0, theta3_FK = 0, theta4_FK = 0, theta5_FK = 0, theta6_FK = 0;
+float theta1_IK = 0, theta2_IK = 0, theta3_IK = 0, theta4_IK = 0, theta5_IK = 0, theta6_IK = 0;
+float theta1_IK_T = 0, theta2_IK_1 = 0, theta2_IK_2 = 0, theta3_IK_1 = 0, theta3_IK_2 = 0, theta5_IK_1 = 0, theta5_IK_2 = 0;
+float tolerance = 2;
+int Number_Of_Solutions = 0;
+int i = 0;
+String Serial_Data = "";
+unsigned int Speed = 1;
+unsigned int Speed_1 = 1;
+unsigned int Speed_2 = 1;
+unsigned int Speed_3 = 1;
+unsigned int Speed_4 = 1;
+unsigned int Speed_5 = 1;
+unsigned int Speed_6 = 1;
+template <int rows, int cols>
+using MatrixSize = Eigen::Matrix<float, rows, cols>;
+// Read Encoder
+int pulses, A_SIG=0, B_SIG=1;
+// Sử dụng định danh kiểu dữ liệu cho ma trận tùy chỉnh
+// MatrixSize<4, 4> T_0_6;
+// MatrixSize<4, 4> T_1_2;
+// MatrixSize<4, 4> T_2_3;
+// MatrixSize<4, 4> T_3_4;
+// MatrixSize<4, 4> T_4_5;
+// MatrixSize<4, 4> T_5_6;
+// Hàm in ma trận ra Serial Monitor
+
+//===========================================================================
+//	DEFINE PINS
+//===========================================================================
+// UART FOR RS485 CONVERTER
+#define RXD2 16
+#define TXD2 17
+
+// BUZZER  // No use
+#define BUZZER 5            
+
+// RELAY   // No use
+//#define RELAY_1 13
+//#define RELAY_2 18
+//#define RELAY_3 19
+//#define RELAY_4 23
+//#define RELAY_5 32
+//#define RELAY_6 33
+
+// HAND WHEEL PULSE ENCODER
+#define CLK_ENCODER 27
+#define DT_ENCODER 25
+//#define SW_ENCODER 15 //No use
+
+// HOME SENSOR
+#define HOME_SENSOR_J1 39
+#define HOME_SENSOR_J2 36
+#define HOME_SENSOR_J3 35
+#define HOME_SENSOR_J4 34
+#define HOME_SENSOR_J5 22
+#define HOME_SENSOR_J6 21
+
+// BUTTON TEACH PENDANT
+#define RED_BUTTON 15
+#define GREEN_BUTTON 26
+
+// UART FOR HMI
+#define RXD1 4
+#define TXD1 2
+
+// VSPI FOR ETHERNET MODULE
+#define VSPI_MOSI 23
+#define VSPI_MISO 19
+#define VSPI_CLK 18
+#define VSPI_CS 5
+
+// HSPI FOR MICRO-SD CARD MODULE
+#define HSPI_MOSI 13
+#define HSPI_MISO 12
+#define HSPI_CLK 14
+#define HSPI_CS 15
+
+//===========================================================================
+//	DEFINE SERVO ID
+//===========================================================================
+#define ID_1 1
+#define ID_2 2
+#define ID_3 3
+#define ID_4 4
+#define ID_5 5
+#define ID_6 6
+
+//===========================================================================
+//	DEFINE HARDWARE_SERIAL
+//===========================================================================
+HardwareSerial HMI(1);
+HardwareSerial SERVO(2);
+//===========================================================================
+//	DEFINE STATE
+//===========================================================================
+#define ON_SERVO 1
+#define OFF_SERVO 0
+#define DELAY_TICK_ENABLE_SERVO 100
+#define ACCELERATION_TIME_PARAMETER 3
+#define DECELERATION_TIME_PARAMETER 4
+
+//===========================================================================
+//	DEFINE VARIABLES
+//===========================================================================
+unsigned int Pulse_Per_Revolution_PPR = 10000;
+float Gearbox_1_Ratio = 50;    // Gearbox
+float Gearbox_2_Ratio = 105.6; // 2.4*44 (Puly*Gearbox)
+float Gearbox_3_Ratio = 47.2;  // Gearbox
+float Gearbox_4_Ratio = 100;
+float Gearbox_5_Ratio = 90;    // 2*45 (Puly*Gearbox)
+float Gearbox_6_Ratio = 50;    // Gearbox
+unsigned int ACCEL_TIME = 1000; // Thời gian tăng tốc ms
+unsigned int DECEL_TIME = 1000; // Thời gian gảim tốc ms
+
+//#define SCK 14
+//#define MISO 25
+//#define MOSI 26
+//#define CS 13
+//#define CS_ETHERNET 23

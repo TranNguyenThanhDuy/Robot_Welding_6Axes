@@ -1,0 +1,490 @@
+#include <Arduino.h>
+#include <ArduinoEigenDense.h>
+#include <math.h>
+#include <../FORWARD_KINEMATIC/Convert_Function.h>
+
+float d0 = 228, L1 = 55, L2 = 330, L3 = 62, d1 = 330, d2 = 201;
+float POS = 90, NEG = -90;
+float theta1 = 0, theta2 = 0, theta3 = 0, theta4 = 0, theta5 = 0, theta6 = 0;
+float theta1_FK = 0, theta2_FK = 0, theta3_FK = 0, theta4_FK = 0, theta5_FK = 0, theta6_FK = 0;
+float theta1_IK = 0, theta2_IK = 0, theta3_IK = 0, theta4_IK = 0, theta5_IK = 0, theta6_IK = 0;
+float theta1_IK_T = 0, theta2_IK_1 = 0, theta2_IK_2 = 0, theta3_IK_1 = 0, theta3_IK_2 = 0, theta5_IK_1 = 0, theta5_IK_2 = 0;
+float tolerance = 2;
+int Number_Of_Solutions = 0;
+int i = 0;
+
+template <int rows, int cols>
+using MatrixSize = Eigen::Matrix<float, rows, cols>;
+
+// Sử dụng định danh kiểu dữ liệu cho ma trận tùy chỉnh
+// MatrixSize<4, 4> T_0_6;
+// MatrixSize<4, 4> T_1_2;
+// MatrixSize<4, 4> T_2_3;
+// MatrixSize<4, 4> T_3_4;
+// MatrixSize<4, 4> T_4_5;
+// MatrixSize<4, 4> T_5_6;
+// Hàm in ma trận ra Serial Monitor
+template <int rows, int cols>
+void printMatrix(const MatrixSize<rows, cols> &matrix)
+{
+  for (int i = 0; i < rows; ++i)
+  {
+    for (int j = 0; j < cols; ++j)
+    {
+      Serial.print(matrix(i, j), 2);
+      Serial.print('\t'); // Để tạo khoảng cách giữa các phần tử
+    }
+    Serial.println(); // Xuống dòng khi đã hoàn thành một hàng
+  }
+  Serial.println();
+}
+
+MatrixSize<4, 4> T_0_1(float a1, float alpha1, float d1, float theta1)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta1), 0, sind(theta1), a1 * cosd(theta1),
+      sind(theta1), 0, -cosd(theta1), a1 * sind(theta1),
+      0, 1, 0, d1,
+      0, 0, 0, 1;
+
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_1_2(float a2, float alpha2, float d2, float theta2)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta2), -sind(theta2), 0, a2 * cosd(theta2),
+      sind(theta2), cosd(theta2), 0, a2 * sind(theta2),
+      0, 0, 1, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_2_3(float a3, float alpha3, float d3, float theta3)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta3), 0, sind(theta3), a3 * cosd(theta3),
+      sind(theta3), 0, -cosd(theta3), a3 * sind(theta3),
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_3_4(float a4, float alpha4, float d4, float theta4)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta4), 0, -sind(theta4), 0,
+      sind(theta4), 0, cosd(theta4), 0,
+      0, -1, 0, d4,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_4_5(float a5, float alpha5, float d5, float theta5)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta5), 0, sind(theta5), 0,
+      sind(theta5), 0, -cosd(theta5), 0,
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_5_6(float a6, float alpha6, float d6, float theta6)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta6), -sind(theta6), 0, 0,
+      sind(theta6), cosd(theta6), 0, 0,
+      0, 0, 1, d6,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+MatrixSize<4, 4> Forward_Kinematics(float theta1_FK, float theta2_FK, float theta3_FK, float theta4_FK, float theta5_FK, float theta6_FK)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  MatrixSize<4, 4> T_0_1_Matrix = T_0_1(L1, POS, d0, theta1_FK);
+  MatrixSize<4, 4> T_1_2_Matrix = T_1_2(L2, 0, 0, theta2_FK);
+  MatrixSize<4, 4> T_2_3_Matrix = T_2_3(L3, POS, d0, theta3_FK);
+  MatrixSize<4, 4> T_3_4_Matrix = T_3_4(0, NEG, d1, theta4_FK);
+  MatrixSize<4, 4> T_4_5_Matrix = T_4_5(0, POS, 0, theta5_FK);
+  MatrixSize<4, 4> T_5_6_Matrix = T_5_6(0, 0, d2, theta6_FK);
+  transformationMatrix =
+      T_0_1_Matrix * T_1_2_Matrix * T_2_3_Matrix * T_3_4_Matrix * T_4_5_Matrix * T_5_6_Matrix;
+
+  return transformationMatrix;
+}
+bool Check_T_0_3(float theta1, float theta2, float theta3, float Wx, float Wy, float Wz)
+{
+  Serial.printf("Check the: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n", theta1, theta2, theta3);
+  MatrixSize<4, 4> T_0_3_Matrix = T_0_1(L1, POS, d0, theta1) * T_1_2(L2, 0, 0, theta2) * T_2_3(L3, POS, d0, theta3) * T_3_4(0, NEG, d1, 0);
+  printMatrix(T_0_3_Matrix);
+  if ((T_0_3_Matrix.block<1, 1>(0, 3).value() - tolerance) <= Wx && (T_0_3_Matrix.block<1, 1>(0, 3).value() + tolerance) >= Wx)
+  {
+    if ((T_0_3_Matrix.block<1, 1>(1, 3).value() - tolerance) <= Wy && (T_0_3_Matrix.block<1, 1>(1, 3).value() + tolerance) >= Wy)
+    {
+      if ((T_0_3_Matrix.block<1, 1>(2, 3).value() - tolerance) <= Wz && (T_0_3_Matrix.block<1, 1>(2, 3).value() + tolerance) >= Wz)
+      {
+        Serial.printf("W Position is OK: Wx_IK = %0.2f, Wy_IK = %0.2f, Wz_IK = %0.2f\n",
+                      T_0_3_Matrix.block<1, 1>(0, 3).value(), T_0_3_Matrix.block<1, 1>(1, 3).value(), T_0_3_Matrix.block<1, 1>(2, 3).value());
+        return true;
+      }
+      else
+        return false;
+    }
+    else
+      return false;
+  }
+  else
+    return false;
+}
+
+bool Check_T_0_6(float theta1, float theta2, float theta3, float theta4, float theta5, float theta6, float EEx, float EEy, float EEz)
+{
+  Serial.printf("Check the: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                theta1, theta2, theta3, theta4, theta5, theta6);
+  MatrixSize<4, 4> T_0_6_Matrix = Forward_Kinematics(theta1, theta2, theta3, theta4, theta5, theta6);
+  printMatrix(T_0_6_Matrix);
+  if ((T_0_6_Matrix.block<1, 1>(0, 3).value() - tolerance) <= EEx && (T_0_6_Matrix.block<1, 1>(0, 3).value() + tolerance) >= EEx)
+  {
+    if ((T_0_6_Matrix.block<1, 1>(1, 3).value() - tolerance) <= EEy && (T_0_6_Matrix.block<1, 1>(1, 3).value() + tolerance) >= EEy)
+    {
+      if ((T_0_6_Matrix.block<1, 1>(2, 3).value() - tolerance) <= EEz && (T_0_6_Matrix.block<1, 1>(2, 3).value() + tolerance) >= EEz)
+      {
+        Serial.printf("EE Position is OK: EEx_IK = %0.2f, EEy_IK = %0.2f, EEz_IK = %0.2f\n",
+                      T_0_6_Matrix.block<1, 1>(0, 3).value(), T_0_6_Matrix.block<1, 1>(1, 3).value(), T_0_6_Matrix.block<1, 1>(2, 3).value());
+        return true;
+      }
+      else
+        return false;
+    }
+    else
+      return false;
+  }
+  else
+    return false;
+}
+
+MatrixSize<3, 3> R_0_3_Inverse(float theta1, float theta2, float theta3)
+{
+  MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+  MatrixSize<4, 4> T_0_3_Matrix = T_0_1(L1, POS, d0, theta1) * T_1_2(L2, 0, 0, theta2) * T_2_3(L3, POS, d0, theta3);
+  R_0_3_Inverse_Matrix = T_0_3_Matrix.block<3, 3>(0, 0).inverse();
+  return R_0_3_Inverse_Matrix;
+}
+// // Hàm tính vị trí điểm cổ tay Wrist, truyền vào vị trí điểm EE (3x1) và ma trận R_0_6 (3x3);
+// MatrixSize<3, 1> Calc_W_Pos_Matrix(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+// {
+//   MatrixSize<3, 1> W_Pos_Matrix;
+//   // W = EE - d2*RZ_0_6 (Trong đó RZ_0_6 là cột thứ 3 của ma trận R_0_6)
+//   W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+
+//   return W_Pos_Matrix;
+// }
+
+// Hàm tính động học nghịch, truyền vào vị trí điểm EE (3x1) và ma trận R_0_6 (3x3)
+
+int Inverse_Kinematics(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+{
+  Number_Of_Solutions = 0;
+  float EEx = EE_Pos_Matrix.block<1, 1>(0, 0).value();
+  float EEy = EE_Pos_Matrix.block<1, 1>(1, 0).value();
+  float EEz = EE_Pos_Matrix.block<1, 1>(2, 0).value();
+
+  bool Out_Of_Workspace_TH1 = EEx <= 0 && EEy >= 0; // Góc phần tư thứ 2
+  bool Out_Of_Workspace_TH2 = EEx <= 0 && EEy <= 0; // Góc phần tư thứ 3
+  bool Out_Of_Workspace_TH3 = EEz <= 0;             // Tọa độ Z âm
+
+  if (Out_Of_Workspace_TH1 == true || Out_Of_Workspace_TH2 == true || Out_Of_Workspace_TH3 == true)
+  {
+    if (Out_Of_Workspace_TH1 == true && Out_Of_Workspace_TH3 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+      return 0;
+    }
+    else if (Out_Of_Workspace_TH2 == true && Out_Of_Workspace_TH3 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+      return 0;
+    }
+    else if (Out_Of_Workspace_TH1 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 |\n", EEx, EEy);
+      return 0;
+    }
+    else if (Out_Of_Workspace_TH2 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 |\n", EEx, EEy);
+      return 0;
+    }
+  }
+
+  MatrixSize<3, 1> W_Pos_Matrix;
+  MatrixSize<3, 3> R_3_6_General;
+  MatrixSize<3, 3> R_3_6_Matrix;
+  MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+
+  W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+  Serial.println("EE Position Matrix: ");
+  printMatrix(EE_Pos_Matrix);
+  Serial.println("W Position Matrix: ");
+  printMatrix(W_Pos_Matrix);
+  float Wx = W_Pos_Matrix.block<1, 1>(0, 0).value();
+  float Wy = W_Pos_Matrix.block<1, 1>(1, 0).value();
+  float Wz = W_Pos_Matrix.block<1, 1>(2, 0).value();
+
+  /*----------------------------------------------- Tính Theta1 -----------------------------------------------*/
+  theta1_IK_T = atan2d(Wy, Wx);
+  Serial.printf("atan2d(%0.2f, %0.2f): %0.2f, theta1_IK_T: %0.2f\n\n", Wy, Wx, theta1_IK_T, theta1_IK_T);
+
+  /*----------------------------------------------- Tính Theta3 -----------------------------------------------*/
+  float TS_Cos_Gamma = -pow(L2, 2) - pow(L3, 2) - pow(d1, 2) + (pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+  float MS_Cos_Gamma = 2 * L2 * sqrt(pow(L3, 2) + pow(d1, 2));
+
+  float Cos_Gamma = TS_Cos_Gamma / MS_Cos_Gamma;
+  float Sin_Gamma = sqrt(1 - pow(Cos_Gamma, 2)); // Có 2 TH: Sin_Gamma = +- Sqrt(...);
+
+  float Gamma_1 = atan2d(Sin_Gamma, Cos_Gamma);  // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+  float Gamma_2 = atan2d(-Sin_Gamma, Cos_Gamma); // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+
+  float Beta = atan2d(d1, L3);
+
+  theta3_IK_1 = Gamma_1 + Beta;
+  theta3_IK_2 = Gamma_2 + Beta;
+
+  Serial.printf("Gamma_1: %0.2f, Beta: %0.2f, theta3_IK_1: %0.2f\n", Gamma_1, Beta, theta3_IK_1);
+  Serial.printf("Gamma_2: %0.2f, Beta: %0.2f, theta3_IK_2: %0.2f\n\n", Gamma_2, Beta, theta3_IK_2);
+
+  /*----------------------------------------------- Tính Theta2 -----------------------------------------------*/
+  float TS_Cos_Phi = pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2) + pow(L2, 2) - (pow(L3, 2) + pow(d1, 2));
+  float MS_Cos_Phi = 2 * L2 * sqrt(pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+
+  float Cos_Phi = TS_Cos_Phi / MS_Cos_Phi;
+  float Sin_Phi = sqrt(1 - pow(Cos_Phi, 2)); // Có 2 TH: Sin_Phi = +- Sqrt(...);
+
+  float Phi_1 = atan2d(Sin_Phi, Cos_Phi);
+  float Phi_2 = atan2d(-Sin_Phi, Cos_Phi);
+
+  float Sigma = atan2d(Wz - d0, sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1);
+
+  theta2_IK_1 = Sigma - Phi_1;
+  theta2_IK_2 = Sigma - Phi_2;
+
+  // Serial.printf("TS_Cos_Phi: %0.2f, MS_Cos_Phi: %0.2f, Cos_Phi: %0.2f, Sin_Phi: %0.2f, -Sin_Phi: %0.2f\n",TS_Cos_Phi, MS_Cos_Phi, Cos_Phi, Sin_Phi, -Sin_Phi);
+
+  Serial.printf("Sigma: %0.2f, Phi_1: %0.2f, theta2_IK_1: %0.2f\n", Sigma, Phi_1, theta2_IK_1);
+  Serial.printf("Sigma: %0.2f, Phi_2: %0.2f, theta2_IK_2: %0.2f\n\n", Sigma, Phi_2, theta2_IK_2);
+
+  // Có 4 TH nghiệm cho theta1, theta2 và theta3
+  // Bộ nghiệm 1: theta1_IK, theta2_IK_1, theta3_IK_1;
+  // Bộ nghiệm 2: theta1_IK, theta2_IK_1, theta3_IK_2;
+  // Bộ nghiệm 3: theta1_IK, theta2_IK_2, theta3_IK_1;
+  // Bộ nghiệm 4: theta1_IK, theta2_IK_2, theta3_IK_2;
+
+  // Bộ lọc nghiệm đầu tiên: Lọc theo góc giới hạn tối đa (Góc lý tưởng chưa xét đến kết cấu cơ khí)
+  if (round(theta1_IK_T) >= -180 && round(theta1_IK_T) <= 180)
+  {
+    if (round(theta2_IK_1) >= -10 && round(theta2_IK_1) <= 165)
+    {
+      if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_1;
+        theta3_IK = theta3_IK_1;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 1 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 1 is not match!");
+      }
+      else
+        Serial.println("Solution 1 is wrong!");
+      if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_1;
+        theta3_IK = theta3_IK_2;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 2 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 2 is not match!");
+      }
+      else
+        Serial.println("Solution 2 is wrong!");
+    }
+    else
+      Serial.println("Solution 1 and 2 is wrong!");
+    if (round(theta2_IK_2) >= -10 && round(theta2_IK_2) <= 165)
+    {
+      if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_2;
+        theta3_IK = theta3_IK_1;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 3 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 3 is not match!");
+      }
+      else
+        Serial.println("Solution 3 is wrong!");
+      if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_2;
+        theta3_IK = theta3_IK_2;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 4 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 4 is not match!");
+      }
+      else
+        Serial.println("Solution 4 is wrong!");
+    }
+    else
+      Serial.println("Solution 3 and 4 is wrong!");
+  }
+  else
+    Serial.println("No Solution Found!");
+
+  /*----------------------------------------------- Tính Theta4, 5, 6 -----------------------------------------------*/
+  R_3_6_General << cosd(theta4) * cosd(theta5) * cosd(theta6) - sind(theta4) * sind(theta6), -cosd(theta4) * cosd(theta5) * sind(theta6) - sind(theta4) * cosd(theta6), cosd(theta4) * sind(theta5),
+      sind(theta4) * cosd(theta5) * cosd(theta6) + cosd(theta4) * sind(theta6), -sind(theta4) * cosd(theta5) * sind(theta6) + cosd(theta4) * cosd(theta6), sind(theta4) * sind(theta5),
+      -sind(theta5) * cosd(theta6), sind(theta5) * sind(theta6), cosd(theta5);
+
+  R_0_3_Inverse_Matrix = R_0_3_Inverse(theta1_IK, theta2_IK, theta3_IK);
+
+  R_3_6_Matrix = R_0_3_Inverse_Matrix * R_0_6_Matrix;
+
+  float r13 = R_3_6_Matrix.block<1, 1>(0, 2).value();
+  float r23 = R_3_6_Matrix.block<1, 1>(1, 2).value();
+  float r33 = R_3_6_Matrix.block<1, 1>(2, 2).value();
+  float r31 = R_3_6_Matrix.block<1, 1>(2, 0).value();
+  float r32 = R_3_6_Matrix.block<1, 1>(2, 1).value();
+
+  theta4_IK = atan2d(r23, r13);
+  theta6_IK = atan2d(r32, -r31);
+  Serial.printf("Calc theta4 = %0.2f and theta6 = %0.2f\n",
+                theta4_IK, theta6_IK);
+  if (theta4_IK >= 90)
+    theta4_IK = theta4_IK - 180;
+  else if (theta4_IK <= -90)
+    theta4_IK = theta4_IK + 180;
+
+  if (theta6_IK >= 90)
+    theta6_IK = theta6_IK - 180;
+  else if (theta6_IK <= -90)
+    theta6_IK = theta6_IK + 180;
+
+  float Cos_Theta5 = r33;
+  float Sin_Theta5 = sqrt(1 - pow(Cos_Theta5, 2)); // Có 2 TH: Sin_Theta5 = +- Sqrt(...);
+
+  theta5_IK_1 = atan2d(Sin_Theta5, Cos_Theta5);
+  theta5_IK_2 = atan2d(-Sin_Theta5, Cos_Theta5);
+  Serial.printf("Wrist Solution 1: theta4_IK = %0.2f, theta5_IK_1 = %0.2f, theta6_IK = %0.2f\n",
+                theta4_IK, theta5_IK_1, theta6_IK);
+  Serial.printf("Wrist Solution 2: theta4_IK = %0.2f, theta5_IK_2 = %0.2f, theta6_IK = %0.2f\n",
+                theta4_IK, theta5_IK_2, theta6_IK);
+  if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_1, theta6_IK, EEx, EEy, EEz) == true)
+  {
+    theta5_IK = theta5_IK_1;
+    Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                  theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+  }
+  else
+    Serial.println("Wrist Solution 1 is not match!");
+  if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_2, theta6_IK, EEx, EEy, EEz) == true)
+  {
+    theta5_IK = theta5_IK_2;
+    Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                  theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+  }
+  else
+    Serial.println("Wrist Solution 2 is not match!");
+  return Number_Of_Solutions;
+}
+void setup()
+{
+  pinMode(2, OUTPUT);
+  Serial.begin(9600);
+}
+
+void loop()
+{
+  // Serial.println("Result T_0_6:");
+  //  printMatrix(T_0_6());
+  // Serial.println();
+  // MatrixSize<4, 4> FK;
+  // for (int i = 0; i <= 90; i++)
+  // {
+  //   FK = Forward_Kinematics(i, -45, 45, 0, 43.53, 0);
+  //   Inverse_Kinematics(FK.block<3, 1>(0, 3), FK.block<3, 3>(0, 0));
+  //   if (i =)
+
+  //     digitalWrite(2, HIGH);
+  //   delay(100);
+  //   digitalWrite(2, LOW);
+  //   delay(100);
+  // }
+
+  // Serial.println("Result Pos_Matrix:");
+
+  // while (i <= 90)
+  // {
+  //   FK = Forward_Kinematics(i, i + 90, i, 0, 43.53, 0);
+  //   Serial.println("Forward Kinematics: ");
+  //   printMatrix(FK);
+  //   int Number_Of_Solutions_loop = Inverse_Kinematics(FK.block<3, 1>(0, 3), FK.block<3, 3>(0, 0));
+  //   Serial.printf("So luong nghiem: %2d\n", Number_Of_Solutions_loop);
+  //   Serial.printf("Goc dat theta1 = %2d, theta2 = %2d, theta3 = %2d\n", i, i + 90, i);
+  //   Serial.printf("Tinh duoc theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n", theta1_IK, theta2_IK, theta3_IK);
+  //   if (Number_Of_Solutions_loop == 1 && round(theta1_IK) == i && round(theta2_IK) == i + 90 && round(theta3_IK) == i)
+  //   {
+  //     i++;
+  //     digitalWrite(2, HIGH);
+  //     delay(100);
+  //     digitalWrite(2, LOW);
+  //     delay(100);
+  //   }
+  //   else
+  //     delay(300000);
+  // }
+  // for (int k = 0; k < 20; k++)
+  // {
+  //   digitalWrite(2, HIGH);
+  //   delay(500);
+  //   digitalWrite(2, LOW);
+  //   delay(500);
+  // }
+  // delay(2000);
+
+  MatrixSize<4, 4> FK;
+
+  FK = Forward_Kinematics(0, 90, -22.55, -90, -12.5, 25.32);
+  Serial.println("Forward Kinematics: ");
+  printMatrix(FK);
+  Inverse_Kinematics(FK.block<3, 1>(0, 3), FK.block<3, 3>(0, 0));
+  // Serial.println("Result Pos_Matrix:");
+
+  delay(4000);
+}

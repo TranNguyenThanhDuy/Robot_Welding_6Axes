@@ -1,0 +1,56 @@
+#include "SPI.h"
+#include <Ethernet2.h>
+// VSPI FOR ETHERNET MODULE AND SD CARD
+#define REASSIGN_PINS
+int sck = 18;
+int miso = 19;
+int mosi = 23;
+int cs = 14;          // Chip Select Pin for SD CARD
+int cs_ethernet = 13; // Chip Select Pin for ETHERNET W5500
+// Hàm gián tiếp để lấy địa chỉ MAC
+void getMacAddress(byte *mac) {
+    uint8_t *buf = Ethernet.maintain();
+    for (int i = 0; i < 6; i++) {
+        mac[i] = buf[i + 1];  // Bắt đầu từ byte thứ 2 trong bộ đệm là địa chỉ MAC
+    }
+}
+void setup()
+{
+  Serial.begin(9600);
+  pinMode(cs_ethernet, OUTPUT);
+/*========== REASSIGN PINS FOR VSPI ==========*/
+#ifdef REASSIGN_PINS
+  SPI.begin(sck, miso, mosi, cs);
+#endif
+
+  Ethernet.init(cs_ethernet);
+
+  // Kiểm tra kết nối
+  if (Ethernet.begin() == 0)
+  {
+    Serial.println("Failed to configure Ethernet using DHCP");
+    // Bạn có thể thử cấu hình địa chỉ IP tĩnh nếu DHCP không thành công
+    // Ethernet.begin(mac, ip);
+  }
+  else
+  {
+    Serial.println("Ethernet connected successfully");
+  }
+
+    // Lấy địa chỉ MAC thông qua hàm gián tiếp
+    byte mac[6];
+    getMacAddress(mac);
+
+    // In địa chỉ MAC
+    Serial.print("MAC Address: ");
+    for (int i = 0; i < 6; i++) {
+        Serial.print(mac[i], HEX);
+        if (i < 5) Serial.print(':');
+    }
+    Serial.println();
+}
+
+void loop()
+{
+  // Your main code here
+}

@@ -1,0 +1,38 @@
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
+#include <../assets/MULTIPLE_SPI/Multiple_SPI.cpp>
+
+#define REASSIGN_PINS
+int sck = 18;
+int miso = 19;
+int mosi = 23;
+int cs = 14;
+
+void setup()
+{
+  Serial.begin(115200);
+
+#ifdef REASSIGN_PINS
+  SPI.begin(sck, miso, mosi, cs);
+#endif
+  pinMode(cs, OUTPUT);
+
+  if (!SD.begin(cs))
+  {
+    Serial.println("Card Mount Failed");
+    return;
+  }
+  SPI_SD_Init_Fcn();
+}
+
+void loop()
+{
+  writeFile(SD, "/hi robot.txt", "hi 6dof arm robot !");
+    writeFile(SD, "/hi.txt", "hiiiiiiiiiii hoooooooo");
+   String data1 = readFile(SD, "/hi robot.txt");
+     String data2 = readFile(SD, "/hi.txt");
+  Serial.printf("data1: %s\n", data1.c_str());
+  Serial.printf("data2: %s\n", data2.c_str());
+  delay(50);
+}

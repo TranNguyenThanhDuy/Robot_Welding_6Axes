@@ -1,0 +1,45 @@
+#include <HardwareSerial.h>
+
+#define RXD1 4
+#define TXD1 2
+
+HardwareSerial NextionSerial(1);
+
+const int BUFFER_SIZE = 256; // Độ dài tối đa của chuỗi
+
+char buffer[BUFFER_SIZE];
+int bufferIndex = 0;
+bool newDataReceived = false;
+
+void IRAM_ATTR HANDLE_UART_INTERRUPT() {
+  while (NextionSerial.available()) {
+    char receivedChar = NextionSerial.read();
+    buffer[bufferIndex] = receivedChar;
+    bufferIndex++;
+
+    if (receivedChar == '\r') { // Ký tự kết thúc từ Nextion
+      buffer[bufferIndex] = '\0'; // Kết thúc chuỗi
+      newDataReceived = true;
+      bufferIndex = 0;
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200); // Kết nối với Serial Monitor
+  NextionSerial.begin(115200, SERIAL_8N1, RXD1, TXD1);
+
+  attachInterrupt(digitalPinToInterrupt(RXD1), HANDLE_UART_INTERRUPT, CHANGE);
+}
+
+void loop() {
+  if (newDataReceived) {
+    Serial.print("Received data: ");
+    Serial.println(buffer);
+
+    // Xử lý chuỗi dữ liệu ở đây
+
+    newDataReceived = false;
+  }
+
+}

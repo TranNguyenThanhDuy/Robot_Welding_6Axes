@@ -1,0 +1,281 @@
+#include <Arduino.h>
+#include <ArduinoEigenDense.h>
+#include <math.h>
+#include <../FORWARD_KINEMATIC/Convert_Function.h>
+
+float d0 = 228, L1 = 55, L2 = 330, L3 = 62, d1 = 330, d2 = 201;
+float POS = 90, NEG = -90;
+float theta1 = 0, theta2 = 0, theta3 = 0, theta4 = 0, theta5 = 0, theta6 = 0;
+float theta1_FK = 0, theta2_FK = 0, theta3_FK = 0, theta4_FK = 0, theta5_FK = 0, theta6_FK = 0;
+float theta1_IK = 0, theta2_IK = 0, theta3_IK = 0, theta4_IK = 0, theta5_IK = 0, theta6_IK = 0;
+float theta1_IK_T = 0, theta2_IK_1 = 0, theta2_IK_2 = 0, theta3_IK_1 = 0, theta3_IK_2 = 0, theta5_IK_1 = 0, theta5_IK_2 = 0;
+
+template <int rows, int cols>
+using MatrixSize = Eigen::Matrix<float, rows, cols>;
+
+// Sử dụng định danh kiểu dữ liệu cho ma trận tùy chỉnh
+// MatrixSize<4, 4> T_0_6;
+// MatrixSize<4, 4> T_1_2;
+// MatrixSize<4, 4> T_2_3;
+// MatrixSize<4, 4> T_3_4;
+// MatrixSize<4, 4> T_4_5;
+// MatrixSize<4, 4> T_5_6;
+// Hàm in ma trận ra Serial Monitor
+template <int rows, int cols>
+void printMatrix(const MatrixSize<rows, cols> &matrix)
+{
+  for (int i = 0; i < rows; ++i)
+  {
+    for (int j = 0; j < cols; ++j)
+    {
+      Serial.print(matrix(i, j), 2);
+      Serial.print('\t'); // Để tạo khoảng cách giữa các phần tử
+    }
+    Serial.println(); // Xuống dòng khi đã hoàn thành một hàng
+  }
+  Serial.println();
+}
+
+MatrixSize<4, 4> T_0_1(float a1, float alpha1, float d1, float theta1)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta1), 0, sind(theta1), a1 * cosd(theta1),
+      sind(theta1), 0, -cosd(theta1), a1 * sind(theta1),
+      0, 1, 0, d1,
+      0, 0, 0, 1;
+
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_1_2(float a2, float alpha2, float d2, float theta2)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta2), -sind(theta2), 0, a2 * cosd(theta2),
+      sind(theta2), cosd(theta2), 0, a2 * sind(theta2),
+      0, 0, 1, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_2_3(float a3, float alpha3, float d3, float theta3)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta3), 0, sind(theta3), a3 * cosd(theta3),
+      sind(theta3), 0, -cosd(theta3), a3 * sind(theta3),
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_3_4(float a4, float alpha4, float d4, float theta4)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta4), 0, -sind(theta4), 0,
+      sind(theta4), 0, cosd(theta4), 0,
+      0, -1, 0, d4,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_4_5(float a5, float alpha5, float d5, float theta5)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta5), 0, sind(theta5), 0,
+      sind(theta5), 0, -cosd(theta5), 0,
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_5_6(float a6, float alpha6, float d6, float theta6)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta6), -sind(theta6), 0, 0,
+      sind(theta6), cosd(theta6), 0, 0,
+      0, 0, 1, d6,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+MatrixSize<4, 4> Forward_Kinematics(float theta1_FK, float theta2_FK, float theta3_FK, float theta4_FK, float theta5_FK, float theta6_FK)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  MatrixSize<4, 4> T_0_1_Matrix = T_0_1(L1, POS, d0, theta1_FK);
+  MatrixSize<4, 4> T_1_2_Matrix = T_1_2(L2, 0, 0, theta2_FK);
+  MatrixSize<4, 4> T_2_3_Matrix = T_2_3(L3, POS, d0, theta3_FK);
+  MatrixSize<4, 4> T_3_4_Matrix = T_3_4(0, NEG, d1, theta4_FK);
+  MatrixSize<4, 4> T_4_5_Matrix = T_4_5(0, POS, 0, theta5_FK);
+  MatrixSize<4, 4> T_5_6_Matrix = T_5_6(0, 0, d2, theta6_FK);
+  transformationMatrix =
+      T_0_1_Matrix * T_1_2_Matrix * T_2_3_Matrix * T_3_4_Matrix * T_4_5_Matrix * T_5_6_Matrix;
+
+  return transformationMatrix;
+}
+MatrixSize<3, 3> R_0_3_Inverse(float theta1, float theta2, float theta3)
+{
+  MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+  MatrixSize<4, 4> T_0_3_Matrix = T_0_1(L1, POS, d0, theta1) * T_1_2(L2, 0, 0, theta2) * T_2_3(L3, POS, d0, theta3);
+  R_0_3_Inverse_Matrix = T_0_3_Matrix.block<3, 3>(0, 0).inverse();
+  return R_0_3_Inverse_Matrix;
+}
+// // Hàm tính vị trí điểm cổ tay Wrist, truyền vào vị trí điểm EE (3x1) và ma trận R_0_6 (3x3);
+// MatrixSize<3, 1> Calc_W_Pos_Matrix(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+// {
+//   MatrixSize<3, 1> W_Pos_Matrix;
+//   // W = EE - d2*RZ_0_6 (Trong đó RZ_0_6 là cột thứ 3 của ma trận R_0_6)
+//   W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+
+//   return W_Pos_Matrix;
+// }
+
+// Hàm tính động học nghịch, truyền vào vị trí điểm EE (3x1) và ma trận R_0_6 (3x3)
+void Inverse_Kinematics(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+{
+  MatrixSize<3, 1> W_Pos_Matrix;
+  MatrixSize<3, 3> R_3_6_General;
+  MatrixSize<3, 3> R_0_3_Inverse_1;
+  MatrixSize<3, 3> R_0_3_Inverse_2;
+  MatrixSize<3, 3> R_0_3_Inverse_3;
+  MatrixSize<3, 3> R_0_3_Inverse_4;
+  W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+  Serial.println("EE Position Matrix: ");
+  printMatrix(EE_Pos_Matrix);
+  Serial.println("W Position Matrix: ");
+  printMatrix(W_Pos_Matrix);
+  float Wx = W_Pos_Matrix.block<1, 1>(0, 0).value();
+  float Wy = W_Pos_Matrix.block<1, 1>(1, 0).value();
+  float Wz = W_Pos_Matrix.block<1, 1>(2, 0).value();
+
+  /*----------------------------------------------- Tính Theta1 -----------------------------------------------*/
+  theta1_IK_T = atan2d(Wy, Wx);
+  Serial.printf("atan2d(%0.2f, %0.2f): %0.2f, theta1_IK_T: %0.2f\n\n", Wy, Wx, theta1_IK_T, theta1_IK_T);
+
+  /*----------------------------------------------- Tính Theta3 -----------------------------------------------*/
+  float TS_Cos_Gamma = -pow(L2, 2) - pow(L3, 2) - pow(d1, 2) + (pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+  float MS_Cos_Gamma = 2 * L2 * sqrt(pow(L3, 2) + pow(d1, 2));
+
+  float Cos_Gamma = TS_Cos_Gamma / MS_Cos_Gamma;
+  float Sin_Gamma = sqrt(1 - pow(Cos_Gamma, 2)); // Có 2 TH: Sin_Gamma = +- Sqrt(...);
+
+  float Gamma_1 = atan2d(Sin_Gamma, Cos_Gamma);  // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+  float Gamma_2 = atan2d(-Sin_Gamma, Cos_Gamma); // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+
+  float Beta = atan2d(d1, L3);
+
+  theta3_IK_1 = Gamma_1 + Beta;
+  theta3_IK_2 = Gamma_2 + Beta;
+
+  Serial.printf("Gamma_1: %0.2f, Beta: %0.2f, theta3_IK_1: %0.2f\n", Gamma_1, Beta, theta3_IK_1);
+  Serial.printf("Gamma_2: %0.2f, Beta: %0.2f, theta3_IK_2: %0.2f\n\n", Gamma_2, Beta, theta3_IK_2);
+
+  /*----------------------------------------------- Tính Theta2 -----------------------------------------------*/
+  float TS_Cos_Phi = pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2) + pow(L2, 2) - (pow(L3, 2) + pow(d1, 2));
+  float MS_Cos_Phi = 2 * L2 * sqrt(pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+
+  float Cos_Phi = TS_Cos_Phi / MS_Cos_Phi;
+  float Sin_Phi = sqrt(1 - pow(Cos_Phi, 2)); // Có 2 TH: Sin_Phi = +- Sqrt(...);
+
+  float Phi_1 = atan2d(Sin_Phi, Cos_Phi);
+  float Phi_2 = atan2d(-Sin_Phi, Cos_Phi);
+
+  float Sigma = atan2d(Wz - d0, sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1);
+
+  theta2_IK_1 = Sigma - Phi_1;
+  theta2_IK_2 = Sigma - Phi_2;
+
+  // Serial.printf("TS_Cos_Phi: %0.2f, MS_Cos_Phi: %0.2f, Cos_Phi: %0.2f, Sin_Phi: %0.2f, -Sin_Phi: %0.2f\n",TS_Cos_Phi, MS_Cos_Phi, Cos_Phi, Sin_Phi, -Sin_Phi);
+
+  Serial.printf("Sigma: %0.2f, Phi_1: %0.2f, theta2_IK_1: %0.2f\n", Sigma, Phi_1, theta2_IK_1);
+  Serial.printf("Sigma: %0.2f, Phi_2: %0.2f, theta2_IK_2: %0.2f\n\n", Sigma, Phi_2, theta2_IK_2);
+
+  // Có 4 TH nghiệm cho theta1, theta2 và theta3
+  // Bộ nghiệm 1: theta1_IK, theta2_IK_1, theta3_IK_1;
+  // Bộ nghiệm 2: theta1_IK, theta2_IK_1, theta3_IK_2;
+  // Bộ nghiệm 3: theta1_IK, theta2_IK_2, theta3_IK_1;
+  // Bộ nghiệm 4: theta1_IK, theta2_IK_2, theta3_IK_2;
+
+  // Bộ lọc nghiệm đầu tiên: Lọc theo góc giới hạn tối đa (Góc lý tưởng chưa xét đến kết cấu cơ khí)
+  if (round(theta1_IK_T) >= -180 && round(theta1_IK_T) <= 180)
+  {
+    if (round(theta2_IK_1) >= -90 && round(theta2_IK_1) <= 75)
+    {
+      if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_1;
+        theta3_IK = theta3_IK_1;
+        Serial.printf("Solution Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                      theta1_IK, theta2_IK, theta3_IK);
+      }
+      else if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_1;
+        theta3_IK = theta3_IK_2;
+        Serial.printf("Solution Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                      theta1_IK, theta2_IK, theta3_IK);
+      }
+      else
+        Serial.println("No Solution Found!");
+    }
+    else if (round(theta2_IK_2) >= -90 && round(theta2_IK_2) <= 75)
+    {
+      if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_2;
+        theta3_IK = theta3_IK_1;
+        Serial.printf("Solution Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                      theta1_IK, theta2_IK, theta3_IK);
+      }
+      else if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_2;
+        theta3_IK = theta3_IK_2;
+        Serial.printf("Solution Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                      theta1_IK, theta2_IK, theta3_IK);
+      }
+      else
+        Serial.println("No Solution Found!");
+    }
+    else
+      Serial.println("No Solution Found!");
+  }
+  else
+    Serial.println("No Solution Found!");
+
+  /*----------------------------------------------- Tính Theta4, 5, 6 -----------------------------------------------*/
+  R_3_6_General << cosd(theta4) * cosd(theta5) * cosd(theta6) - sind(theta4) * sind(theta6), -cosd(theta4) * cosd(theta5) * sind(theta6) - sind(theta4) * cosd(theta6), cosd(theta4) * sind(theta5),
+      sind(theta4) * cosd(theta5) * cosd(theta6) + cosd(theta4) * sind(theta6), -sind(theta4) * cosd(theta5) * sind(theta6) + cosd(theta4) * cosd(theta6), sind(theta4) * sind(theta5),
+      -sind(theta5) * cosd(theta6), sind(theta5) * sind(theta6), cosd(theta5);
+
+  R_0_3_Inverse_1 = R_0_3_Inverse(theta1_IK, theta2_IK_1, theta3_IK_1);
+  R_0_3_Inverse_2 = R_0_3_Inverse(theta1_IK, theta2_IK_1, theta3_IK_2);
+  R_0_3_Inverse_3 = R_0_3_Inverse(theta1_IK, theta2_IK_2, theta3_IK_1);
+  R_0_3_Inverse_4 = R_0_3_Inverse(theta1_IK, theta2_IK_2, theta3_IK_2);
+}
+void setup()
+{
+  Serial.begin(9600);
+}
+
+void loop()
+{
+  // Serial.println("Result T_0_6:");
+  //  printMatrix(T_0_6());
+  // Serial.println();
+  MatrixSize<4, 4> FK;
+
+  FK = Forward_Kinematics(90, 75.56, -22.55, 0, 43.5, 0);
+  Inverse_Kinematics(FK.block<3, 1>(0, 3), FK.block<3, 3>(0, 0));
+  // Serial.println("Result Pos_Matrix:"); 
+  Serial.println("Forward Kinematics: ");
+  printMatrix(FK);
+  delay(4000);
+}

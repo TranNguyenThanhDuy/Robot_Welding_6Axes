@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app_config.h"
 #include "axis_controller.h"
 #include "gui_log_redirect.h"
 #include "usb_camera.h"
@@ -58,6 +59,7 @@ private:
     QLineEdit* filePathEdit_;
     QString convertPathToLinux(const QString& path);
 
+    AppConfig config_;
     std::unique_ptr<StreamRedirect> coutRedirect_;
     std::unique_ptr<StreamRedirect> cerrRedirect_;
 

@@ -1,0 +1,4 @@
+    newtime = micros();
+    Read_HMI();
+    lasttime = micros() - newtime;
+    Serial.printf("Time: %ld  \n", lasttime);

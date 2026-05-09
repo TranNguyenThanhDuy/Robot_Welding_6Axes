@@ -1,0 +1,42 @@
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
+#include <../MULTIPLE_SPI/Multiple_SPI.cpp>
+
+#define REASSIGN_PINS
+int sck = 18;
+int miso = 19;
+int mosi = 23;
+int cs = 14;
+#define BUZZER 5 
+#define RELAY_5 32
+#define RELAY_6 33
+// BUTTON TEACH PENDANT
+#define RED_BUTTON 15
+#define GREEN_BUTTON 26
+void setup()
+{ 
+  Serial.begin(115200);
+pinMode(BUZZER, OUTPUT);
+pinMode(RED_BUTTON, INPUT);
+pinMode(GREEN_BUTTON, INPUT);
+pinMode(RELAY_5, OUTPUT);
+pinMode(RELAY_6, OUTPUT);
+#ifdef REASSIGN_PINS
+  SPI.begin(sck, miso, mosi, cs);
+#endif
+  pinMode(cs, OUTPUT);
+
+  if (!SD.begin(cs))
+  {
+    Serial.println("Card Mount Failed");
+    return;
+  }
+  SPI_SD_Init_Fcn();
+}
+
+void loop()
+{
+
+
+}

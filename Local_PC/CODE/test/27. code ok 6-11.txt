@@ -1,0 +1,1433 @@
+// ##########################################################################################################
+//	 AUTHOR: HUỲNH QUỐC TOÀN
+//   PROJECT: 6-DOF ARM ROBOT USE RS-485 & TCP/IP PROTOCOL
+//   MCU: ESP32-32U
+//   DESCRIPTION:
+//     * Hardware:
+//       - Use Ezi-Servo Plus-R Series of FASTECH
+//       - Use 6 Driver (4 Driver EzS-NDR-60L and 2 Drivers EzS-NDR-60M)
+//       - Use 6 Servo (4 Servo EzM-60L-A-D and 2 Servo EzM-60M-A-D)
+//       - Use 2 Brake 24V for Servo Joint 2 and Joint 3
+//    * Software:
+//       - Communicate with 6-Drivers via RS-485 Protocol
+//       - Communicate with PLC and etc... via TCP/IP Protocol
+//       - Use PlatformIO on VSCode
+// ##########################################################################################################
+
+//===========================================================================================================
+//   LAST UPDATE: 05 - 11 - 2023
+//   EMAIL: huynhquoctoan26@gmail.com
+//-----------------------------------------------------------------------------------------------------------
+//   DEPENDENCY GRAPH:          |  NOTE:
+//------------------------------+----------------------------------------------------------------------------
+//   |-- ...                    | Build files, libdeps and settings env
+//   |-- lib                    |
+//      |-- FS @ 2.0.0          | [HIDE] Libraies for framework-arduinoespressif32
+//      |-- SD @ 2.0.0          | [HIDE] Libraies for framework-arduinoespressif32
+//      |-- SPI @ 2.0.0         | [HIDE] Libraies for framework-arduinoespressif32
+//      |-- ENCODER             | Header and lib source files for Read Encoder and Interrupts
+//      |-- FORWARD_KINEMATIC   | Header and lib source files for Kinematics of Robot
+//      |-- MATH                | Header and lib source files for Matrix Calculate
+//      |-- MULTIPLE_SPI        | Lib source files for SPI Communication with SD and Ethernet module
+//      |-- SERVO               | Header and lib source files for communicate with Servo via RS-485 Protocol
+//   |-- src                    |
+//      |-- main.cpp            | <--[THIS FILE]
+//   |-- ...                    | Platformio config and etc ...
+//===========================================================================================================
+
+//===========================================================================
+//	INCLUDE LIBRARIES
+//===========================================================================
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
+#include <math.h>
+#include <Arduino.h>
+#include <../MATH/ArduinoEigenDense.h>
+#include <../SERVO/Communication_Interface.h>
+#include <../FORWARD_KINEMATIC/Convert_Function.h>
+#include <../ENCODER/Encoder.h>
+#include <../MULTIPLE_SPI/Multiple_SPI.cpp>
+
+//===========================================================================
+//	DEFINE PINS
+//===========================================================================
+// UART FOR RS485 CONVERTER
+#define RXD2 16
+#define TXD2 17
+
+// UART FOR HMI
+#define RXD1 4
+#define TXD1 2
+
+// HAND WHEEL PULSE ENCODER
+#define CLK_ENCODER 27
+#define DT_ENCODER 25
+
+// HOME SENSOR
+#define HOME_SENSOR_J1 39
+#define HOME_SENSOR_J2 36
+#define HOME_SENSOR_J3 35
+#define HOME_SENSOR_J4 34
+#define HOME_SENSOR_J5 22
+#define HOME_SENSOR_J6 21
+
+// BUZZER
+#define BUZZER 5
+
+// RELAY
+#define RELAY_5 32
+#define RELAY_6 33
+
+// BUTTON TEACH PENDANT
+#define RED_BUTTON 15
+#define GREEN_BUTTON 26
+
+// VSPI FOR ETHERNET MODULE AND SD CARD
+#define REASSIGN_PINS
+int sck = 18;
+int miso = 19;
+int mosi = 23;
+int cs = 14;          // Chip Select Pin for SD CARD
+int cs_ethernet = 13; // Chip Select Pin for ETHERNET W5500
+
+// NO USE
+// #define RELAY_1 13
+// #define RELAY_2 18
+// #define RELAY_3 19
+// #define RELAY_4 23
+// #define SW_ENCODER
+
+//===========================================================================
+//	DEFINE SERVO ID
+//===========================================================================
+#define ID_1 1
+#define ID_2 2
+#define ID_3 3
+#define ID_4 4
+#define ID_5 5
+#define ID_6 6
+//===========================================================================
+//	DEFINE STATE
+//===========================================================================
+#define ON_SERVO 1
+#define OFF_SERVO 0
+#define DELAY_TICK_ENABLE_SERVO 100
+#define DELAY_TICK_DISABLE_SERVO 100
+#define ACCELERATION_TIME_PARAMETER 3
+#define DECELERATION_TIME_PARAMETER 4
+#define NULL_POS -1
+#define RETURN_OK 0
+
+//===========================================================================
+//	DEFINE HARDWARE_SERIAL
+//===========================================================================
+HardwareSerial HMI(1);
+
+//===========================================================================
+//	DEFINE VARIABLES
+//===========================================================================
+// FOR KINEMATICS
+float d0 = 228, L1 = 55, L2 = 330, L3 = 62, d1 = 330, d2 = 201;
+float POS = 90, NEG = -90;
+float theta1 = 0, theta2 = 0, theta3 = 0, theta4 = 0, theta5 = 0, theta6 = 0;
+float theta1_old = 0, theta2_old = 0, theta3_old = 0, theta4_old = 0, theta5_old = 0, theta6_old = 0;
+float theta1_FK = 0, theta2_FK = 0, theta3_FK = 0, theta4_FK = 0, theta5_FK = 0, theta6_FK = 0;
+float theta1_IK = 0, theta2_IK = 0, theta3_IK = 0, theta4_IK = 0, theta5_IK = 0, theta6_IK = 0;
+float theta1_IK_T = 0, theta2_IK_1 = 0, theta2_IK_2 = 0, theta3_IK_1 = 0, theta3_IK_2 = 0, theta5_IK_1 = 0, theta5_IK_2 = 0;
+float tolerance = 2;
+int Number_Of_Solutions = 0;
+int i = 0;
+
+// TEMPLATE MATRIX
+template <int rows, int cols>
+using MatrixSize = Eigen::Matrix<float, rows, cols>;
+
+// HAND WHEEL PULSE ENCODER
+long newPosition = 0;
+long lastPosition = 0;
+Encoder Teach_Pendant_Encoder;
+int Encoder_Position_Diff = 0;
+
+// SYSTEM STATUS [flase: OFF | true: ON]
+bool SYSTEM_STATUS = false;
+
+// UART FOR HMI
+// const int BUFFER_SIZE = 100; // Độ dài tối đa của chuỗi
+// char HMI_BUFFER[BUFFER_SIZE];
+// int bufferIndex = 0;
+bool newDataReceived = false;
+String HMI_BUFFER_DATA = "";
+String CURRENT_PAGE = "HP";
+
+// FOR MOVE SERVO
+long POS_SERVO_1 = 0, POS_SERVO_2 = 0, POS_SERVO_3 = 0, POS_SERVO_4 = 0, POS_SERVO_5 = 0, POS_SERVO_6 = 0;
+unsigned int Speed_Selection_Mode = 1;
+unsigned int Speed = 1;
+unsigned int Speed_1 = 1;
+unsigned int Speed_2 = 1;
+unsigned int Speed_3 = 1;
+unsigned int Speed_4 = 1;
+unsigned int Speed_5 = 1;
+unsigned int Speed_6 = 1;
+float Encoder_Pulse_Resolution = 0;
+unsigned int ACCEL_TIME = 500; // Thời gian tăng tốc ms
+unsigned int DECEL_TIME = 500; // Thời gian giảm tốc (ms)
+
+// FOR ROBOT HARDWARE
+unsigned int Pulse_Per_Revolution_PPR = 10000;
+float Gearbox_1_Ratio = 50;    // Gearbox
+float Gearbox_2_Ratio = 105.6; // 2.4*44 (Puly*Gearbox)
+float Gearbox_3_Ratio = 47.2;  // Gearbox
+float Gearbox_4_Ratio = 100;
+float Gearbox_5_Ratio = 90; // 2*45 (Puly*Gearbox)
+float Gearbox_6_Ratio = 50; // Gearbox
+
+// OTHER
+String Theta_Selection = "";
+MatrixSize<4, 4> FK_Jog;
+float THETA2_OFFSET = 90;
+//===========================================================================
+//	DEFINE FUNCTIONS
+//===========================================================================
+String splitString(String str, String delim, uint16_t pos)
+{
+  String tmp = str;
+  for (int i = 0; i < pos; i++)
+  {
+    tmp = tmp.substring(tmp.indexOf(delim) + 1);
+    if (tmp.indexOf(delim) == -1 && i != pos - 1)
+      return "";
+  }
+  return tmp.substring(0, tmp.indexOf(delim));
+}
+String roundFloatToString(float value)
+{
+  char buffer[10];
+  dtostrf(value, 4, 1, buffer);
+  return String(buffer);
+}
+float roundToNearestHalfDeg(float degree_target)
+{
+  float rounded = round(degree_target * 2.0) / 2.0;
+  return rounded;
+}
+void ENABLE_BUZZER(unsigned int time)
+{
+  digitalWrite(BUZZER, HIGH);
+  delay(time);
+  digitalWrite(BUZZER, LOW);
+}
+void Read_HMI() // void IRAM_ATTR HANDLE_UART_INTERRUPT()
+{
+  while (HMI.available())
+  {
+    HMI_BUFFER_DATA = HMI.readStringUntil('\n');
+    // char receivedChar = HMI.read();
+    // HMI_BUFFER[bufferIndex] = receivedChar;
+    // bufferIndex++;
+
+    // if (receivedChar == '\r')
+    // {                                   // Ký tự kết thúc từ Nextion
+    //     HMI_BUFFER[bufferIndex] = '\0'; // Kết thúc chuỗi
+    //     bufferIndex = 0;
+    // }
+    // Serial.printf("Received Data: %s\n", HMI_BUFFER_DATA);
+    newDataReceived = true;
+    ENABLE_BUZZER(10);
+  }
+}
+void Write_End_Byte_HMI()
+{
+  HMI.write(0xff);
+  HMI.write(0xff);
+  HMI.write(0xff);
+}
+void Write_HMI(String page, String object, String para, String content)
+{
+  HMI.print(page + "." + object + "." + para + "=" + String('"') + content + String('"'));
+  Write_End_Byte_HMI();
+}
+void Write_HMI(String page, String object, String para, unsigned int value)
+{
+  HMI.print(page + "." + object + "." + para + "=" + String(value));
+  Write_End_Byte_HMI();
+}
+void Write_HMI(String object, String para, String content)
+{
+  HMI.print(object + "." + para + "=" + String('"') + content + String('"'));
+  Write_End_Byte_HMI();
+}
+void Write_HMI(String object, String para, unsigned int value)
+{
+  HMI.print(object + "." + para + "=" + String(value));
+  Write_End_Byte_HMI();
+}
+void Alarm_HMI(String alarm_Content)
+{
+  Write_HMI("alarm", "pco", 65504);
+  Write_HMI("alarm", "txt", alarm_Content);
+  delay(1000);
+  Write_HMI("alarm", "pco", 2016);
+  Write_HMI("alarm", "txt", "No alarm!");
+}
+void ENABLE_ALL_SERVO()
+{
+  int onNo = 0;
+  // BẬT SERVO: TỪ SERVO 1 ĐẾN SERVO 6
+  ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_1, ON_SERVO) != RETURN_OK)
+  {
+    Serial.println("ENABLE SERVO ID 1 - JOINT 1 ENABLE AGAIN");
+    delay(200);
+    onNo++;
+    if (onNo >= 10)
+    {
+      Alarm_HMI("ENABLE SERVO ID 1 FAILED!");
+      onNo = 0;
+      break;
+    }
+  }
+  onNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_2, ON_SERVO) != RETURN_OK)
+  {
+    Serial.println("ENABLE SERVO ID 2 - JOINT 2 ENABLE AGAIN");
+    delay(200);
+    onNo++;
+    if (onNo >= 10)
+    {
+      Alarm_HMI("ENABLE SERVO ID 2 FAILED!");
+      onNo = 0;
+      break;
+    }
+  }
+  onNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_3, ON_SERVO) != RETURN_OK)
+  {
+    Serial.println("ENABLE SERVO ID 3 - JOINT 3 ENABLE AGAIN");
+    delay(200);
+    onNo++;
+    if (onNo >= 10)
+    {
+      Alarm_HMI("ENABLE SERVO ID 3 FAILED!");
+      onNo = 0;
+      break;
+    }
+  }
+  onNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_4, ON_SERVO) != RETURN_OK)
+  {
+    Serial.println("ENABLE SERVO ID 4 - JOINT 4 ENABLE AGAIN");
+    delay(200);
+    onNo++;
+    if (onNo >= 10)
+    {
+      Alarm_HMI("ENABLE SERVO ID 4 FAILED!");
+      onNo = 0;
+      break;
+    }
+  }
+  onNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_5, ON_SERVO) != RETURN_OK)
+  {
+    Serial.println("ENABLE SERVO ID 5 - JOINT 5 ENABLE AGAIN");
+    delay(200);
+    onNo++;
+    if (onNo >= 10)
+    {
+      Alarm_HMI("ENABLE SERVO ID 5 FAILED!");
+      onNo = 0;
+      break;
+    }
+  }
+  onNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_6, ON_SERVO) != RETURN_OK)
+  {
+    Serial.println("ENABLE SERVO ID 6 - JOINT 6 ENABLE AGAIN");
+    delay(200);
+    onNo++;
+    if (onNo >= 10)
+    {
+      Alarm_HMI("ENABLE SERVO ID 6 FAILED!");
+      onNo = 0;
+      break;
+    }
+  }
+}
+void DISABLE_ALL_SERVO()
+{
+  int offNo = 0;
+  // TẮT SERVO: TỪ SERVO 6 ĐẾN SERVO 1
+  ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_6, OFF_SERVO) != RETURN_OK)
+  {
+    Serial.println("DISABLE SERVO ID 6 - JOINT 6 DISABLE AGAIN");
+    delay(200);
+    offNo++;
+    if (offNo >= 10)
+    {
+      Alarm_HMI("DISABLE SERVO ID 6 FAILED!");
+      offNo = 0;
+      break;
+    }
+  }
+  offNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_5, OFF_SERVO) != RETURN_OK)
+  {
+    Serial.println("DISABLE SERVO ID 5 - JOINT 5 DISABLE AGAIN");
+    delay(200);
+    offNo++;
+    if (offNo >= 10)
+    {
+      Alarm_HMI("DISABLE SERVO ID 5 FAILED!");
+      offNo = 0;
+      break;
+    }
+  }
+  offNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_4, OFF_SERVO) != RETURN_OK)
+  {
+    Serial.println("DISABLE SERVO ID 4 - JOINT 4 DISABLE AGAIN");
+    delay(200);
+    offNo++;
+    if (offNo >= 10)
+    {
+      Alarm_HMI("DISABLE SERVO ID 4 FAILED!");
+      offNo = 0;
+      break;
+    }
+  }
+  offNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_3, OFF_SERVO) != RETURN_OK)
+  {
+    Serial.println("DISABLE SERVO ID 3 - JOINT 3 DISABLE AGAIN");
+    delay(200);
+    if (offNo >= 10)
+    {
+      Alarm_HMI("DISABLE SERVO ID 3 FAILED!");
+      offNo = 0;
+      break;
+    }
+  }
+  offNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_2, OFF_SERVO) != RETURN_OK)
+  {
+    Serial.println("DISABLE SERVO ID 2 - JOINT 2 DISABLE AGAIN");
+    delay(200);
+    if (offNo >= 10)
+    {
+      Alarm_HMI("DISABLE SERVO ID 2 FAILED!");
+      offNo = 0;
+      break;
+    }
+  }
+  offNo = 0;
+  ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+  delay(50);
+  while (SERVO_ServoEnable(ID_1, OFF_SERVO) != RETURN_OK)
+  {
+    Serial.println("DISABLE SERVO ID 1 - JOINT 1 DISABLE AGAIN");
+    delay(200);
+    if (offNo >= 10)
+    {
+      Alarm_HMI("DISABLE SERVO ID 1 FAILED!");
+      offNo = 0;
+      break;
+    }
+  }
+}
+void CLEAR_ALL_POSITION()
+{
+  SERVO_ClearPosition(ID_1);
+  delay(10);
+  SERVO_ClearPosition(ID_2);
+  delay(10);
+  SERVO_ClearPosition(ID_3);
+  delay(10);
+  SERVO_ClearPosition(ID_4);
+  delay(10);
+  SERVO_ClearPosition(ID_5);
+  delay(10);
+  SERVO_ClearPosition(ID_6);
+  delay(10);
+}
+long DEG_TO_PULSE_1_CONV(float degree_target)
+{
+  long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_1_Ratio) / 360;
+  return pulse;
+}
+long DEG_TO_PULSE_2_CONV(float degree_target)
+{
+  long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_2_Ratio) / 360;
+  return pulse;
+}
+long DEG_TO_PULSE_3_CONV(float degree_target)
+{
+  long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_3_Ratio) / 360;
+  return pulse;
+}
+long DEG_TO_PULSE_4_CONV(float degree_target)
+{
+  long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_4_Ratio) / 360;
+  return pulse;
+}
+long DEG_TO_PULSE_5_CONV(float degree_target)
+{
+  long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_5_Ratio) / 360;
+  return pulse;
+}
+long DEG_TO_PULSE_6_CONV(float degree_target)
+{
+  long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_6_Ratio) / 360;
+  return pulse;
+}
+float GET_THETA_1()
+{
+  SERVO_GetActualPos(ID_1, &POS_SERVO_1);
+  float theta_Servo = (float)(POS_SERVO_1 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_1_Ratio);
+  return theta_Servo;
+}
+float GET_THETA_2()
+{
+  SERVO_GetActualPos(ID_2, &POS_SERVO_2);
+  float theta_Servo = (float)(POS_SERVO_2 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_2_Ratio);
+  return theta_Servo;
+}
+float GET_THETA_3()
+{
+  SERVO_GetActualPos(ID_3, &POS_SERVO_3);
+  float theta_Servo = (float)(POS_SERVO_3 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_3_Ratio);
+  return theta_Servo;
+}
+float GET_THETA_4()
+{
+  SERVO_GetActualPos(ID_4, &POS_SERVO_4);
+  float theta_Servo = (float)(POS_SERVO_4 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_4_Ratio);
+  return theta_Servo;
+}
+float GET_THETA_5()
+{
+  SERVO_GetActualPos(ID_5, &POS_SERVO_5);
+  float theta_Servo = (float)(POS_SERVO_5 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_5_Ratio);
+  return theta_Servo;
+}
+float GET_THETA_6()
+{
+  SERVO_GetActualPos(ID_6, &POS_SERVO_6);
+  float theta_Servo = (float)(POS_SERVO_6 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_6_Ratio);
+  return theta_Servo;
+}
+unsigned int SPEED_SERVO_1(float degree_target, float degree_target_old, unsigned int time_target)
+{
+  Serial.printf("Function 1 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                degree_target, degree_target_old, time_target);
+  long pulse_Difference = abs(DEG_TO_PULSE_1_CONV(degree_target) - DEG_TO_PULSE_1_CONV(degree_target_old));
+  Serial.printf("Function 1 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+  unsigned int speed = pulse_Difference / time_target;
+  Serial.printf("Speed_1 = %8ld\n\n", speed);
+  return speed;
+}
+unsigned int SPEED_SERVO_2(float degree_target, float degree_target_old, unsigned int time_target)
+{
+  Serial.printf("Function 2 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                degree_target, degree_target_old, time_target);
+  long pulse_Difference = abs(DEG_TO_PULSE_2_CONV(degree_target) - DEG_TO_PULSE_2_CONV(degree_target_old));
+  Serial.printf("Function 2 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+  unsigned int speed = pulse_Difference / time_target;
+  Serial.printf("Speed_2 = %8ld\n\n", speed);
+  return speed;
+}
+unsigned int SPEED_SERVO_3(float degree_target, float degree_target_old, unsigned int time_target)
+{
+  Serial.printf("Function 3 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                degree_target, degree_target_old, time_target);
+  long pulse_Difference = abs(DEG_TO_PULSE_3_CONV(degree_target) - DEG_TO_PULSE_3_CONV(degree_target_old));
+  Serial.printf("Function 3 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+  unsigned int speed = pulse_Difference / time_target;
+  Serial.printf("Speed_3 = %8ld\n\n", speed);
+  return speed;
+}
+unsigned int SPEED_SERVO_4(float degree_target, float degree_target_old, unsigned int time_target)
+{
+  Serial.printf("Function 4 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                degree_target, degree_target_old, time_target);
+  long pulse_Difference = abs(DEG_TO_PULSE_4_CONV(degree_target) - DEG_TO_PULSE_4_CONV(degree_target_old));
+  Serial.printf("Function 4 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+  unsigned int speed = pulse_Difference / time_target;
+  Serial.printf("Speed_4 = %8ld\n\n", speed);
+  return speed;
+}
+unsigned int SPEED_SERVO_5(float degree_target, float degree_target_old, unsigned int time_target)
+{
+  Serial.printf("Function 5 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                degree_target, degree_target_old, time_target);
+  long pulse_Difference = abs(DEG_TO_PULSE_5_CONV(degree_target) - DEG_TO_PULSE_5_CONV(degree_target_old));
+  Serial.printf("Function 5 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+  unsigned int speed = pulse_Difference / time_target;
+  Serial.printf("Speed_5 = %8ld\n\n", speed);
+  return speed;
+}
+unsigned int SPEED_SERVO_6(float degree_target, float degree_target_old, unsigned int time_target)
+{
+  Serial.printf("Function 6 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                degree_target, degree_target_old, time_target);
+  long pulse_Difference = abs(DEG_TO_PULSE_6_CONV(degree_target) - DEG_TO_PULSE_6_CONV(degree_target_old));
+  Serial.printf("Function 6 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+  unsigned int speed = pulse_Difference / time_target;
+  Serial.printf("Speed_6 = %8ld\n\n", speed);
+  return speed;
+}
+void SET_ALL_ACCELERATION_TIME(unsigned int accel_time)
+{
+  SERVO_SetParameter(ID_1, ACCELERATION_TIME_PARAMETER, accel_time);
+  SERVO_SetParameter(ID_2, ACCELERATION_TIME_PARAMETER, accel_time);
+  SERVO_SetParameter(ID_3, ACCELERATION_TIME_PARAMETER, accel_time);
+  SERVO_SetParameter(ID_4, ACCELERATION_TIME_PARAMETER, accel_time);
+  SERVO_SetParameter(ID_5, ACCELERATION_TIME_PARAMETER, accel_time);
+  SERVO_SetParameter(ID_6, ACCELERATION_TIME_PARAMETER, accel_time);
+}
+void SET_ALL_DECELERATION_TIME(unsigned int decel_time)
+{
+  SERVO_SetParameter(ID_1, DECELERATION_TIME_PARAMETER, decel_time);
+  SERVO_SetParameter(ID_2, DECELERATION_TIME_PARAMETER, decel_time);
+  SERVO_SetParameter(ID_3, DECELERATION_TIME_PARAMETER, decel_time);
+  SERVO_SetParameter(ID_4, DECELERATION_TIME_PARAMETER, decel_time);
+  SERVO_SetParameter(ID_5, DECELERATION_TIME_PARAMETER, decel_time);
+  SERVO_SetParameter(ID_6, DECELERATION_TIME_PARAMETER, decel_time);
+}
+void RESET_ALL_ALARM()
+{
+  SERVO_ServoAlarmReset(ID_1);
+  SERVO_ServoAlarmReset(ID_2);
+  SERVO_ServoAlarmReset(ID_3);
+  SERVO_ServoAlarmReset(ID_4);
+  SERVO_ServoAlarmReset(ID_5);
+  SERVO_ServoAlarmReset(ID_6);
+}
+void SAVE_ALL_PARAMETER()
+{
+  SERVO_SaveAllParameter(ID_1);
+  SERVO_SaveAllParameter(ID_2);
+  SERVO_SaveAllParameter(ID_3);
+  SERVO_SaveAllParameter(ID_4);
+  SERVO_SaveAllParameter(ID_5);
+  SERVO_SaveAllParameter(ID_6);
+}
+template <int rows, int cols>
+void printMatrix(const MatrixSize<rows, cols> &matrix)
+{
+  for (int i = 0; i < rows; ++i)
+  {
+    for (int j = 0; j < cols; ++j)
+    {
+      Serial.print(matrix(i, j), 2);
+      Serial.print('\t'); // Để tạo khoảng cách giữa các phần tử
+    }
+    Serial.println(); // Xuống dòng khi đã hoàn thành một hàng
+  }
+  Serial.println();
+}
+
+MatrixSize<4, 4> T_0_1(float a1, float alpha1, float d1, float theta1)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta1), 0, sind(theta1), a1 * cosd(theta1),
+      sind(theta1), 0, -cosd(theta1), a1 * sind(theta1),
+      0, 1, 0, d1,
+      0, 0, 0, 1;
+
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_1_2(float a2, float alpha2, float d2, float theta2)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta2), -sind(theta2), 0, a2 * cosd(theta2),
+      sind(theta2), cosd(theta2), 0, a2 * sind(theta2),
+      0, 0, 1, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_2_3(float a3, float alpha3, float d3, float theta3)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta3), 0, sind(theta3), a3 * cosd(theta3),
+      sind(theta3), 0, -cosd(theta3), a3 * sind(theta3),
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_3_4(float a4, float alpha4, float d4, float theta4)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta4), 0, -sind(theta4), 0,
+      sind(theta4), 0, cosd(theta4), 0,
+      0, -1, 0, d4,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_4_5(float a5, float alpha5, float d5, float theta5)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta5), 0, sind(theta5), 0,
+      sind(theta5), 0, -cosd(theta5), 0,
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_5_6(float a6, float alpha6, float d6, float theta6)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << cosd(theta6), -sind(theta6), 0, 0,
+      sind(theta6), cosd(theta6), 0, 0,
+      0, 0, 1, d6,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+MatrixSize<4, 4> Forward_Kinematics(float theta1_FK, float theta2_FK, float theta3_FK, float theta4_FK, float theta5_FK, float theta6_FK)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  MatrixSize<4, 4> T_0_1_Matrix = T_0_1(L1, POS, d0, theta1_FK);
+  MatrixSize<4, 4> T_1_2_Matrix = T_1_2(L2, 0, 0, theta2_FK);
+  MatrixSize<4, 4> T_2_3_Matrix = T_2_3(L3, POS, d0, theta3_FK);
+  MatrixSize<4, 4> T_3_4_Matrix = T_3_4(0, NEG, d1, theta4_FK);
+  MatrixSize<4, 4> T_4_5_Matrix = T_4_5(0, POS, 0, theta5_FK);
+  MatrixSize<4, 4> T_5_6_Matrix = T_5_6(0, 0, d2, theta6_FK);
+  transformationMatrix =
+      T_0_1_Matrix * T_1_2_Matrix * T_2_3_Matrix * T_3_4_Matrix * T_4_5_Matrix * T_5_6_Matrix;
+
+  return transformationMatrix;
+}
+bool Check_T_0_3(float theta1, float theta2, float theta3, float Wx, float Wy, float Wz)
+{
+  Serial.printf("Check the: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n", theta1, theta2, theta3);
+  MatrixSize<4, 4> T_0_3_Matrix = T_0_1(L1, POS, d0, theta1) * T_1_2(L2, 0, 0, theta2) * T_2_3(L3, POS, d0, theta3) * T_3_4(0, NEG, d1, 0);
+  printMatrix(T_0_3_Matrix);
+  if ((T_0_3_Matrix.block<1, 1>(0, 3).value() - tolerance) <= Wx && (T_0_3_Matrix.block<1, 1>(0, 3).value() + tolerance) >= Wx)
+  {
+    if ((T_0_3_Matrix.block<1, 1>(1, 3).value() - tolerance) <= Wy && (T_0_3_Matrix.block<1, 1>(1, 3).value() + tolerance) >= Wy)
+    {
+      if ((T_0_3_Matrix.block<1, 1>(2, 3).value() - tolerance) <= Wz && (T_0_3_Matrix.block<1, 1>(2, 3).value() + tolerance) >= Wz)
+      {
+        Serial.printf("W Position is OK: Wx_IK = %0.2f, Wy_IK = %0.2f, Wz_IK = %0.2f\n",
+                      T_0_3_Matrix.block<1, 1>(0, 3).value(), T_0_3_Matrix.block<1, 1>(1, 3).value(), T_0_3_Matrix.block<1, 1>(2, 3).value());
+        return true;
+      }
+      else
+        return false;
+    }
+    else
+      return false;
+  }
+  else
+    return false;
+}
+
+bool Check_T_0_6(float theta1, float theta2, float theta3, float theta4, float theta5, float theta6, float EEx, float EEy, float EEz)
+{
+  Serial.printf("Check the: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                theta1, theta2, theta3, theta4, theta5, theta6);
+  MatrixSize<4, 4> T_0_6_Matrix = Forward_Kinematics(theta1, theta2, theta3, theta4, theta5, theta6);
+  printMatrix(T_0_6_Matrix);
+  if ((T_0_6_Matrix.block<1, 1>(0, 3).value() - tolerance) <= EEx && (T_0_6_Matrix.block<1, 1>(0, 3).value() + tolerance) >= EEx)
+  {
+    if ((T_0_6_Matrix.block<1, 1>(1, 3).value() - tolerance) <= EEy && (T_0_6_Matrix.block<1, 1>(1, 3).value() + tolerance) >= EEy)
+    {
+      if ((T_0_6_Matrix.block<1, 1>(2, 3).value() - tolerance) <= EEz && (T_0_6_Matrix.block<1, 1>(2, 3).value() + tolerance) >= EEz)
+      {
+        Serial.printf("EE Position is OK: EEx_IK = %0.2f, EEy_IK = %0.2f, EEz_IK = %0.2f\n",
+                      T_0_6_Matrix.block<1, 1>(0, 3).value(), T_0_6_Matrix.block<1, 1>(1, 3).value(), T_0_6_Matrix.block<1, 1>(2, 3).value());
+        return true;
+      }
+      else
+        return false;
+    }
+    else
+      return false;
+  }
+  else
+    return false;
+}
+
+MatrixSize<3, 3> R_0_3_Inverse(float theta1, float theta2, float theta3)
+{
+  MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+  MatrixSize<4, 4> T_0_3_Matrix = T_0_1(L1, POS, d0, theta1) * T_1_2(L2, 0, 0, theta2) * T_2_3(L3, POS, d0, theta3);
+  R_0_3_Inverse_Matrix = T_0_3_Matrix.block<3, 3>(0, 0).inverse();
+  return R_0_3_Inverse_Matrix;
+}
+
+// // Hàm tính vị trí điểm cổ tay Wrist, truyền vào vị trí điểm EE (3x1) và ma trận R_0_6 (3x3);
+// MatrixSize<3, 1> Calc_W_Pos_Matrix(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+// {
+//   MatrixSize<3, 1> W_Pos_Matrix;
+//   // W = EE - d2*RZ_0_6 (Trong đó RZ_0_6 là cột thứ 3 của ma trận R_0_6)
+//   W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+
+//   return W_Pos_Matrix;
+// }
+
+// Hàm tính động học nghịch, truyền vào vị trí điểm EE (3x1) và ma trận R_0_6 (3x3)
+
+int Inverse_Kinematics(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+{
+  Number_Of_Solutions = 0;
+  float EEx = EE_Pos_Matrix.block<1, 1>(0, 0).value();
+  float EEy = EE_Pos_Matrix.block<1, 1>(1, 0).value();
+  float EEz = EE_Pos_Matrix.block<1, 1>(2, 0).value();
+
+  bool Out_Of_Workspace_TH1 = EEx <= 0 && EEy >= 0; // Góc phần tư thứ 2
+  bool Out_Of_Workspace_TH2 = EEx <= 0 && EEy <= 0; // Góc phần tư thứ 3
+  bool Out_Of_Workspace_TH3 = EEz <= 0;             // Tọa độ Z âm
+
+  if (Out_Of_Workspace_TH1 == true || Out_Of_Workspace_TH2 == true || Out_Of_Workspace_TH3 == true)
+  {
+    if (Out_Of_Workspace_TH1 == true && Out_Of_Workspace_TH3 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+      return 0;
+    }
+    else if (Out_Of_Workspace_TH2 == true && Out_Of_Workspace_TH3 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+      return 0;
+    }
+    else if (Out_Of_Workspace_TH1 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 |\n", EEx, EEy);
+      return 0;
+    }
+    else if (Out_Of_Workspace_TH2 == true)
+    {
+      Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 |\n", EEx, EEy);
+      return 0;
+    }
+  }
+
+  MatrixSize<3, 1> W_Pos_Matrix;
+  MatrixSize<3, 3> R_3_6_General;
+  MatrixSize<3, 3> R_3_6_Matrix;
+  MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+
+  W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+  Serial.println("EE Position Matrix: ");
+  printMatrix(EE_Pos_Matrix);
+  Serial.println("W Position Matrix: ");
+  printMatrix(W_Pos_Matrix);
+  float Wx = W_Pos_Matrix.block<1, 1>(0, 0).value();
+  float Wy = W_Pos_Matrix.block<1, 1>(1, 0).value();
+  float Wz = W_Pos_Matrix.block<1, 1>(2, 0).value();
+
+  /*----------------------------------------------- Tính Theta1 -----------------------------------------------*/
+  theta1_IK_T = atan2d(Wy, Wx);
+  Serial.printf("atan2d(%0.2f, %0.2f): %0.2f, theta1_IK_T: %0.2f\n\n", Wy, Wx, theta1_IK_T, theta1_IK_T);
+
+  /*----------------------------------------------- Tính Theta3 -----------------------------------------------*/
+  float TS_Cos_Gamma = -pow(L2, 2) - pow(L3, 2) - pow(d1, 2) + (pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+  float MS_Cos_Gamma = 2 * L2 * sqrt(pow(L3, 2) + pow(d1, 2));
+
+  float Cos_Gamma = TS_Cos_Gamma / MS_Cos_Gamma;
+  float Sin_Gamma = sqrt(1 - pow(Cos_Gamma, 2)); // Có 2 TH: Sin_Gamma = +- Sqrt(...);
+
+  float Gamma_1 = atan2d(Sin_Gamma, Cos_Gamma);  // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+  float Gamma_2 = atan2d(-Sin_Gamma, Cos_Gamma); // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+
+  float Beta = atan2d(d1, L3);
+
+  theta3_IK_1 = Gamma_1 + Beta;
+  theta3_IK_2 = Gamma_2 + Beta;
+
+  Serial.printf("Gamma_1: %0.2f, Beta: %0.2f, theta3_IK_1: %0.2f\n", Gamma_1, Beta, theta3_IK_1);
+  Serial.printf("Gamma_2: %0.2f, Beta: %0.2f, theta3_IK_2: %0.2f\n\n", Gamma_2, Beta, theta3_IK_2);
+
+  /*----------------------------------------------- Tính Theta2 -----------------------------------------------*/
+  float TS_Cos_Phi = pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2) + pow(L2, 2) - (pow(L3, 2) + pow(d1, 2));
+  float MS_Cos_Phi = 2 * L2 * sqrt(pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+
+  float Cos_Phi = TS_Cos_Phi / MS_Cos_Phi;
+  float Sin_Phi = sqrt(1 - pow(Cos_Phi, 2)); // Có 2 TH: Sin_Phi = +- Sqrt(...);
+
+  float Phi_1 = atan2d(Sin_Phi, Cos_Phi);
+  float Phi_2 = atan2d(-Sin_Phi, Cos_Phi);
+
+  float Sigma = atan2d(Wz - d0, sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1);
+
+  theta2_IK_1 = Sigma - Phi_1;
+  theta2_IK_2 = Sigma - Phi_2;
+
+  // Serial.printf("TS_Cos_Phi: %0.2f, MS_Cos_Phi: %0.2f, Cos_Phi: %0.2f, Sin_Phi: %0.2f, -Sin_Phi: %0.2f\n",TS_Cos_Phi, MS_Cos_Phi, Cos_Phi, Sin_Phi, -Sin_Phi);
+
+  Serial.printf("Sigma: %0.2f, Phi_1: %0.2f, theta2_IK_1: %0.2f\n", Sigma, Phi_1, theta2_IK_1);
+  Serial.printf("Sigma: %0.2f, Phi_2: %0.2f, theta2_IK_2: %0.2f\n\n", Sigma, Phi_2, theta2_IK_2);
+
+  // Có 4 TH nghiệm cho theta1, theta2 và theta3
+  // Bộ nghiệm 1: theta1_IK, theta2_IK_1, theta3_IK_1;
+  // Bộ nghiệm 2: theta1_IK, theta2_IK_1, theta3_IK_2;
+  // Bộ nghiệm 3: theta1_IK, theta2_IK_2, theta3_IK_1;
+  // Bộ nghiệm 4: theta1_IK, theta2_IK_2, theta3_IK_2;
+
+  // Bộ lọc nghiệm đầu tiên: Lọc theo góc giới hạn tối đa (Góc lý tưởng chưa xét đến kết cấu cơ khí)
+  if (round(theta1_IK_T) >= -180 && round(theta1_IK_T) <= 180)
+  {
+    if (round(theta2_IK_1) >= -10 && round(theta2_IK_1) <= 165)
+    {
+      if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_1;
+        theta3_IK = theta3_IK_1;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 1 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 1 is not match!");
+      }
+      else
+        Serial.println("Solution 1 is wrong!");
+      if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_1;
+        theta3_IK = theta3_IK_2;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 2 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 2 is not match!");
+      }
+      else
+        Serial.println("Solution 2 is wrong!");
+    }
+    else
+      Serial.println("Solution 1 and 2 is wrong!");
+    if (round(theta2_IK_2) >= -10 && round(theta2_IK_2) <= 165)
+    {
+      if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_2;
+        theta3_IK = theta3_IK_1;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 3 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 3 is not match!");
+      }
+      else
+        Serial.println("Solution 3 is wrong!");
+      if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+      {
+        theta1_IK = theta1_IK_T;
+        theta2_IK = theta2_IK_2;
+        theta3_IK = theta3_IK_2;
+        if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+        {
+          Serial.printf("FINAL - Solution 4 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                        theta1_IK, theta2_IK, theta3_IK);
+          Number_Of_Solutions++;
+        }
+        else
+          Serial.println("Solution 4 is not match!");
+      }
+      else
+        Serial.println("Solution 4 is wrong!");
+    }
+    else
+      Serial.println("Solution 3 and 4 is wrong!");
+  }
+  else
+    Serial.println("No Solution Found!");
+
+  /*----------------------------------------------- Tính Theta4, 5, 6 -----------------------------------------------*/
+  R_3_6_General << cosd(theta4) * cosd(theta5) * cosd(theta6) - sind(theta4) * sind(theta6), -cosd(theta4) * cosd(theta5) * sind(theta6) - sind(theta4) * cosd(theta6), cosd(theta4) * sind(theta5),
+      sind(theta4) * cosd(theta5) * cosd(theta6) + cosd(theta4) * sind(theta6), -sind(theta4) * cosd(theta5) * sind(theta6) + cosd(theta4) * cosd(theta6), sind(theta4) * sind(theta5),
+      -sind(theta5) * cosd(theta6), sind(theta5) * sind(theta6), cosd(theta5);
+
+  R_0_3_Inverse_Matrix = R_0_3_Inverse(theta1_IK, theta2_IK, theta3_IK);
+
+  R_3_6_Matrix = R_0_3_Inverse_Matrix * R_0_6_Matrix;
+
+  float r13 = R_3_6_Matrix.block<1, 1>(0, 2).value();
+  float r23 = R_3_6_Matrix.block<1, 1>(1, 2).value();
+  float r33 = R_3_6_Matrix.block<1, 1>(2, 2).value();
+  float r31 = R_3_6_Matrix.block<1, 1>(2, 0).value();
+  float r32 = R_3_6_Matrix.block<1, 1>(2, 1).value();
+
+  theta4_IK = atan2d(r23, r13);
+  theta6_IK = atan2d(r32, -r31);
+  Serial.printf("Calc theta4 = %0.2f and theta6 = %0.2f\n",
+                theta4_IK, theta6_IK);
+  if (theta4_IK >= 90)
+    theta4_IK = theta4_IK - 180;
+  else if (theta4_IK <= -90)
+    theta4_IK = theta4_IK + 180;
+
+  if (theta6_IK >= 90)
+    theta6_IK = theta6_IK - 180;
+  else if (theta6_IK <= -90)
+    theta6_IK = theta6_IK + 180;
+
+  float Cos_Theta5 = r33;
+  float Sin_Theta5 = sqrt(1 - pow(Cos_Theta5, 2)); // Có 2 TH: Sin_Theta5 = +- Sqrt(...);
+
+  theta5_IK_1 = atan2d(Sin_Theta5, Cos_Theta5);
+  theta5_IK_2 = atan2d(-Sin_Theta5, Cos_Theta5);
+  Serial.printf("Wrist Solution 1: theta4_IK = %0.2f, theta5_IK_1 = %0.2f, theta6_IK = %0.2f\n",
+                theta4_IK, theta5_IK_1, theta6_IK);
+  Serial.printf("Wrist Solution 2: theta4_IK = %0.2f, theta5_IK_2 = %0.2f, theta6_IK = %0.2f\n",
+                theta4_IK, theta5_IK_2, theta6_IK);
+  if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_1, theta6_IK, EEx, EEy, EEz) == true)
+  {
+    theta5_IK = theta5_IK_1;
+    if (theta5_IK >= 120 || theta5_IK <= -120)
+    {
+      Serial.printf("Theta5 = %0.2f | OUT OF RANGE!", theta5_IK);
+      return 0;
+    }
+    Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                  theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+  }
+  else
+    Serial.println("Wrist Solution 1 is not match!");
+  if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_2, theta6_IK, EEx, EEy, EEz) == true)
+  {
+    theta5_IK = theta5_IK_2;
+    if (theta5_IK >= 120 || theta5_IK <= -120)
+    {
+      Serial.printf("Theta5 = %0.2f | OUT OF RANGE!", theta5_IK);
+      return 0;
+    }
+    Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                  theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+  }
+  else
+    Serial.println("Wrist Solution 2 is not match!");
+  return Number_Of_Solutions;
+}
+
+void RUN_ROBOT(float theta1, float theta2, float theta3, float theta4, float theta5, float theta6, int speed)
+{
+  SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_PULSE_6_CONV(theta6), speed);
+  SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_PULSE_1_CONV(theta1), speed);
+  SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_PULSE_2_CONV(theta2), speed);
+  SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_PULSE_3_CONV(theta3), speed);
+  SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_PULSE_4_CONV(theta4), speed);
+  SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_PULSE_5_CONV(theta5), speed);
+}
+
+void clearBufferData()
+{
+  // memset(HMI_BUFFER, 0, sizeof(HMI_BUFFER));
+  HMI_BUFFER_DATA = "";
+}
+void update_System_Status()
+{
+  if (SYSTEM_STATUS == true)
+  {
+    Write_HMI("status", "pco", 2016);
+    Write_HMI("status", "txt", "ON");
+  }
+  else
+  {
+    Write_HMI("status", "pco", 63488);
+    Write_HMI("status", "txt", "OFF");
+  }
+}
+void controlDriver_setParameter_Funcs()
+{
+}
+void change_Page_Funcs()
+{
+  if (HMI_BUFFER_DATA.indexOf("HP") != NULL_POS)
+  {
+    CURRENT_PAGE = "HP";
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("KI_SLI") != NULL_POS)
+  {
+    CURRENT_PAGE = "KI_SLI";
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("KI_ENC") != NULL_POS)
+  {
+    CURRENT_PAGE = "KI_ENC";
+    Theta_Selection = "ST1";
+    update_System_Status();
+    Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1()));
+    Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2()));
+    Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3()));
+    Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4()));
+    Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5()));
+    Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6()));
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    Write_HMI("xfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 3).value()));
+    Write_HMI("yfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 3).value()));
+    Write_HMI("zfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 3).value()));
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("BP") != NULL_POS)
+  {
+    CURRENT_PAGE = "BP";
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("PP") != NULL_POS)
+  {
+    CURRENT_PAGE = "PP";
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("AP") != NULL_POS)
+  {
+    CURRENT_PAGE = "AP";
+    clearBufferData();
+  }
+}
+void Home_Page()
+{
+  if (HMI_BUFFER_DATA.indexOf("ON") != NULL_POS)
+  {
+    SYSTEM_STATUS = true;
+    update_System_Status();
+    ENABLE_ALL_SERVO();
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("OFF") != NULL_POS)
+  {
+    SYSTEM_STATUS = false;
+    update_System_Status();
+    DISABLE_ALL_SERVO();
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("RST") != NULL_POS)
+  {
+    RESET_ALL_ALARM();
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("ACC") != NULL_POS)
+  {
+    ACCEL_TIME = splitString(HMI_BUFFER_DATA, ";", 1).toInt();
+    Serial.printf("ACC TIME = %d \n", ACCEL_TIME);
+    SET_ALL_ACCELERATION_TIME(ACCEL_TIME);
+    Alarm_HMI("Accel [" + String(ACCEL_TIME) + "] is set!");
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("DEC") != NULL_POS)
+  {
+    DECEL_TIME = splitString(HMI_BUFFER_DATA, ";", 1).toInt();
+    Serial.printf("DEC TIME = %d \n", DECEL_TIME);
+    SET_ALL_DECELERATION_TIME(DECEL_TIME);
+    Alarm_HMI("Decel [" + String(DECEL_TIME) + "] is set!");
+    clearBufferData();
+  }
+}
+void Update_Encoder_State_And_Speed_Selection()
+{
+  if (HMI_BUFFER_DATA.indexOf("SX1\r") != NULL_POS)
+  {
+    Speed_Selection_Mode = 1;
+    Alarm_HMI("Speed x1 is set!");
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("SX10\r") != NULL_POS)
+  {
+    Speed_Selection_Mode = 2;
+    Alarm_HMI("Speed x10 is set!");
+    clearBufferData();
+  }
+  else if (HMI_BUFFER_DATA.indexOf("SX100\r") != NULL_POS)
+  {
+    Speed_Selection_Mode = 3;
+    Alarm_HMI("Speed x100 is set!");
+    clearBufferData();
+  }
+
+  newPosition = Teach_Pendant_Encoder.getCount();
+  Encoder_Position_Diff = newPosition - lastPosition;
+
+  // if (newPosition > lastPosition)
+  // {
+  //   Serial.print("CW  : ");
+  //   Serial.println(newPosition);
+  // }
+  // else if (newPosition < lastPosition)
+  // {
+  //   Serial.print("CCW : ");
+  //   Serial.println(newPosition);
+  // }
+
+  switch (Speed_Selection_Mode)
+  {
+  case 1:
+    Encoder_Pulse_Resolution = Encoder_Position_Diff * 0.5;
+    break;
+  case 2:
+    Encoder_Pulse_Resolution = Encoder_Position_Diff * 1;
+    break;
+  case 3:
+    Encoder_Pulse_Resolution = Encoder_Position_Diff * 5;
+    break;
+  default:
+    Encoder_Pulse_Resolution = Encoder_Position_Diff * 0.5;
+    break;
+  }
+  // Serial.print("LastPosition : ");
+  // Serial.print(newPosition);
+  // Serial.print(" , lastPosition : ");
+  // Serial.print(lastPosition);
+  // Serial.print(" , Diff: ");
+  // Serial.print(Encoder_Position_Diff);
+  // Serial.print(" , Encoder_Pulse_Resolution: ");
+  // Serial.println(Encoder_Pulse_Resolution);
+}
+
+void Kinematic_Encoder_Mode_Page()
+{
+  Read_HMI();
+  Update_Encoder_State_And_Speed_Selection();
+
+  if (HMI_BUFFER_DATA.indexOf("ST1") != NULL_POS)
+    Theta_Selection = "ST1";
+  else if (HMI_BUFFER_DATA.indexOf("ST2") != NULL_POS)
+    Theta_Selection = "ST2";
+  else if (HMI_BUFFER_DATA.indexOf("ST3") != NULL_POS)
+    Theta_Selection = "ST3";
+  else if (HMI_BUFFER_DATA.indexOf("ST4") != NULL_POS)
+    Theta_Selection = "ST4";
+  else if (HMI_BUFFER_DATA.indexOf("ST5") != NULL_POS)
+    Theta_Selection = "ST5";
+  else if (HMI_BUFFER_DATA.indexOf("ST6") != NULL_POS)
+    Theta_Selection = "ST6";
+
+  HMI_BUFFER_DATA = "";
+  Update_Encoder_State_And_Speed_Selection();
+  if (Encoder_Pulse_Resolution != 0)
+  {
+    if (Theta_Selection == "ST1")
+    {
+      SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_PULSE_1_CONV(roundToNearestHalfDeg(GET_THETA_1() + Encoder_Pulse_Resolution)), 50000);
+      lastPosition = Teach_Pendant_Encoder.getCount();
+      Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1()));
+    }
+    else if (Theta_Selection == "ST2")
+    {
+      SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_PULSE_2_CONV(roundToNearestHalfDeg(GET_THETA_2() + Encoder_Pulse_Resolution)), 50000);
+      lastPosition = Teach_Pendant_Encoder.getCount();
+      Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2()));
+    }
+    else if (Theta_Selection == "ST3")
+    {
+      SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_PULSE_3_CONV(roundToNearestHalfDeg(GET_THETA_3() + Encoder_Pulse_Resolution)), 50000);
+      lastPosition = Teach_Pendant_Encoder.getCount();
+      Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3()));
+    }
+    else if (Theta_Selection == "ST4")
+    {
+      SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_PULSE_4_CONV(roundToNearestHalfDeg(GET_THETA_4() + Encoder_Pulse_Resolution)), 100000);
+      lastPosition = Teach_Pendant_Encoder.getCount();
+      Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4()));
+    }
+    else if (Theta_Selection == "ST5")
+    {
+      SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_PULSE_5_CONV(roundToNearestHalfDeg(GET_THETA_5() + Encoder_Pulse_Resolution)), 100000);
+      lastPosition = Teach_Pendant_Encoder.getCount();
+      Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5()));
+    }
+    else if (Theta_Selection == "ST6")
+    {
+      SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_PULSE_6_CONV(roundToNearestHalfDeg(GET_THETA_6() + Encoder_Pulse_Resolution)), 50000);
+      lastPosition = Teach_Pendant_Encoder.getCount();
+      Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6()));
+    }
+    else
+      lastPosition = Teach_Pendant_Encoder.getCount();
+
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    Write_HMI("xfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 3).value()));
+    Write_HMI("yfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 3).value()));
+    Write_HMI("zfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 3).value()));
+  }
+  Update_Encoder_State_And_Speed_Selection();
+}
+void roundToNearestHalfDeg()
+{
+  while (CURRENT_PAGE == "HP")
+  {
+    update_System_Status();
+    Serial.println("This is the Home Page !");
+    Home_Page();
+    Read_HMI();
+    change_Page_Funcs();
+  }
+  while (CURRENT_PAGE == "KI_SLI")
+  {
+    update_System_Status();
+    Serial.println("This is the KI_SLI Page !");
+    Read_HMI();
+    change_Page_Funcs();
+  }
+  while (CURRENT_PAGE == "KI_ENC")
+  {
+    // Serial.println("This is the KI_ENC Page !");
+    Kinematic_Encoder_Mode_Page();
+    Read_HMI();
+    change_Page_Funcs();
+  }
+  while (CURRENT_PAGE == "BP")
+  {
+    update_System_Status();
+    Serial.println("This is the Base Mode Page !");
+
+    Read_HMI();
+    change_Page_Funcs();
+  }
+  while (CURRENT_PAGE == "PP")
+  {
+    update_System_Status();
+    Serial.println("This is the Position Table Page !");
+
+    Read_HMI();
+    change_Page_Funcs();
+  }
+  while (CURRENT_PAGE == "AP")
+  {
+    Serial.println("This is the About Page !");
+    Read_HMI();
+    change_Page_Funcs();
+  }
+}
+void Initialization_Fcns()
+{
+  // digitalWrite(RELAY_5, HIGH);
+  // digitalWrite(RELAY_6, LOW);
+  // delay(500);
+  // digitalWrite(RELAY_5, LOW);
+  // digitalWrite(RELAY_6, HIGH);
+  // delay(500);
+  //   digitalWrite(RELAY_5, LOW);
+  // digitalWrite(RELAY_6, LOW);
+  //   delay(500);
+  // digitalWrite(RELAY_5, HIGH);
+  // digitalWrite(RELAY_6, HIGH);
+  // delay(500);
+  // digitalWrite(RELAY_5, LOW);
+  // digitalWrite(RELAY_6, LOW);
+  //   delay(500);
+  // digitalWrite(BUZZER, HIGH);
+  // delay(300);
+  // digitalWrite(BUZZER, LOW);
+  // delay(300);
+  // digitalWrite(BUZZER, HIGH);
+  // delay(300);
+  // digitalWrite(BUZZER, LOW);
+  // delay(300);
+  FK_Jog << 0, 0, 0, 0,
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+      0, 0, 0, 0;
+}
+void setup()
+{
+  /*========== SETUP PINMODE ==========*/
+  pinMode(BUZZER, OUTPUT);
+  pinMode(RELAY_5, OUTPUT);
+  pinMode(RELAY_6, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(cs, OUTPUT);
+  pinMode(cs_ethernet, OUTPUT);
+  pinMode(RED_BUTTON, INPUT);
+  pinMode(GREEN_BUTTON, INPUT);
+  pinMode(HOME_SENSOR_J1, INPUT);
+  pinMode(HOME_SENSOR_J2, INPUT);
+  pinMode(HOME_SENSOR_J3, INPUT);
+  pinMode(HOME_SENSOR_J4, INPUT);
+  pinMode(HOME_SENSOR_J5, INPUT);
+  pinMode(HOME_SENSOR_J6, INPUT);
+
+/*========== REASSIGN PINS FOR VSPI ==========*/
+#ifdef REASSIGN_PINS
+  SPI.begin(sck, miso, mosi, cs);
+#endif
+
+  /*========== INIT SPI FOR SD CARD ==========*/
+  if (!SD.begin(cs))
+  {
+    Serial.println("Card Mount Failed");
+    return;
+  }
+  SPI_SD_Init_Fcn();
+
+  /*========== INIT SERIAL ==========*/
+  Serial.begin(115200);
+  Serial2.begin(460800, SERIAL_8N1, RXD2, TXD2);
+  HMI.begin(115200, SERIAL_8N1, RXD1, TXD1);
+  // attachInterrupt(digitalPinToInterrupt(RXD1), HANDLE_UART_INTERRUPT, CHANGE);
+
+  /*========== INIT ENCODER ==========*/
+  Teach_Pendant_Encoder.attachHalfQuad(DT_ENCODER, CLK_ENCODER);
+  Teach_Pendant_Encoder.setCount(0);
+  /*========== OTHER INIT FCNS==========*/
+  Initialization_Fcns();
+}
+void loop()
+{
+
+  // writeFile(SD, "/hi robot.txt", "hi 6dof arm robot !");
+  // writeFile(SD, "/hi.txt", "hiiiiiiiiiii hoooooooo");
+  // String data1 = readFile(SD, "/hi robot.txt");
+  // String data2 = readFile(SD, "/hi.txt");
+  // Serial.printf("data1: %s\n", data1.c_str());
+  // Serial.printf("data2: %s\n", data2.c_str());
+  // Serial.print("RED_BUTTON: ");
+  // Serial.print(digitalRead(RED_BUTTON));
+  // Serial.print(", GREEN_BUTTON: ");
+  // Serial.println(digitalRead(GREEN_BUTTON));
+
+  // digitalWrite(BUZZER, HIGH);
+  // delay(100);
+  // digitalWrite(BUZZER, LOW);
+  // delay(100);
+
+  long lasttime = 0;
+  long newtime = 0;
+  controlDriver_setParameter_Funcs();
+  change_Page_Funcs();
+  roundToNearestHalfDeg();
+}

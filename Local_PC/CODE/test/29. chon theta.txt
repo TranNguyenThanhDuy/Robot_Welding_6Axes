@@ -1,0 +1,46 @@
+
+  if (theta4_IK > 90 && theta6_IK > 90) // 4363 - ok
+  {
+    theta4_IK = theta4_IK - 180;
+    theta6_IK = theta6_IK - 180; 
+  }
+  else if (theta4_IK > 90 && (theta6_IK >= -90 && theta6_IK <= 90)) // 4362 - ok
+  {
+    theta4_IK = theta4_IK - 180;
+    theta6_IK = theta6_IK;
+  }
+  else if (theta4_IK > 90 && theta6_IK < -90) // 4361
+  {
+    theta4_IK = theta4_IK + 180;
+    theta6_IK = theta6_IK - 180;
+  }
+  else if ((theta4_IK >= -90 && theta4_IK <= 90) && theta6_IK > 90) // 4263
+  {
+    theta4_IK = theta4_IK;
+    theta6_IK = theta6_IK - 180;
+  }
+  else if ((theta4_IK >= -90 && theta4_IK <= 90) && (theta6_IK >= -90 && theta6_IK <= 90)) // 4262 - ok
+  {
+    theta4_IK = theta4_IK;
+    theta6_IK = theta6_IK;
+  }
+  else if ((theta4_IK >= -90 && theta4_IK <= 90) && theta6_IK < -90) // 4261
+  {
+    theta4_IK = theta4_IK + 180;
+    theta6_IK = theta6_IK - 180;
+  }
+  else if (theta4_IK < -90 && theta6_IK > 90) // 4163 - ok
+  {
+    theta4_IK = theta4_IK + 180;
+    theta6_IK = theta6_IK - 180;
+  }
+  else if (theta4_IK < -90 && (theta6_IK >= -90 && theta6_IK <= 90)) // 4162
+  {
+    theta4_IK = theta4_IK;
+    theta6_IK = theta6_IK - 180;
+  }
+  else if (theta4_IK < -90 && theta6_IK < -90) // 4161 - ok
+  {
+    theta4_IK = theta4_IK + 180;
+    theta6_IK = theta6_IK + 180;
+  }

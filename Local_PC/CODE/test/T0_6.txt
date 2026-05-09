@@ -1,0 +1,29 @@
+T0_6 =
+ 
+[S6*(S4*(C1*S2*S3 - C1*C2*C3) + C4*S1) - C6*(C5*(C4*(C1*S2*S3 - C1*C2*C3) - S1*S4) + S5*(C1*C2*S3 + C1*C3*S2)),           C6*(S4*(C1*S2*S3 - C1*C2*C3) + C4*S1) + S6*(C5*(C4*(C1*S2*S3 - C1*C2*C3) - S1*S4) + S5*(C1*C2*S3 + C1*C3*S2)),           C5*(C1*C2*S3 + C1*C3*S2) - S5*(C4*(C1*S2*S3 - C1*C2*C3) - S1*S4),           D1*(C1*C2*S3 + C1*C3*S2) + L1*C1 - D2*(S5*(C4*(C1*S2*S3 - C1*C2*C3) - S1*S4) - C5*(C1*C2*S3 + C1*C3*S2)) + L2*C1*C2 + L3*C1*C2*C3 - L3*C1*S2*S3]
+[C6*(C5*(C4*(C2*C3*S1 - S1*S2*S3) - C1*S4) - S5*(C2*S1*S3 + C3*S1*S2)) - S6*(C1*C4 + S4*(C2*C3*S1 - S1*S2*S3)),           - S6*(C5*(C4*(C2*C3*S1 - S1*S2*S3) - C1*S4) - S5*(C2*S1*S3 + C3*S1*S2)) - C6*(C1*C4 + S4*(C2*C3*S1 - S1*S2*S3)),           S5*(C4*(C2*C3*S1 - S1*S2*S3) - C1*S4) + C5*(C2*S1*S3 + C3*S1*S2),           D1*(C2*S1*S3 + C3*S1*S2) + L1*S1 + D2*(S5*(C4*(C2*C3*S1 - S1*S2*S3) - C1*S4) + C5*(C2*S1*S3 + C3*S1*S2)) + L2*C2*S1 + L3*C2*C3*S1 - L3*S1*S2*S3]
+[C6*(S5*(C2*C3 - S2*S3) + C4*C5*(C2*S3 + C3*S2)) - S4*S6*(C2*S3 + C3*S2),           - S6*(S5*(C2*C3 - S2*S3) + C4*C5*(C2*S3 + C3*S2)) - C6*S4*(C2*S3 + C3*S2),           C4*S5*(C2*S3 + C3*S2) - C5*(C2*C3 - S2*S3),           D0 - D2*(C5*(C2*C3 - S2*S3) - C4*S5*(C2*S3 + C3*S2)) + L2*S2 - D1*(C2*C3 - S2*S3) + L3*C2*S3 + L3*C3*S2]
+[0,           0,           0,           1]
+ 
+>> 
+
+
+T0_6 =
+ 
+r11 = s6(s4(c1s2s3 - c1c2c3) + c4s1) - c6(c5(c4(c1s2s3 - c1c2c3) - s1s4) + s5(c1c2s3 + c1c3s2))
+r12 = c6(s4(c1s2s3 - c1c2c3) + c4s1) + s6(c5(c4(c1s2s3 - c1c2c3) - s1s4) + s5(c1c2s3 + c1c3s2))           
+r13 = c5(c1c2s3 + c1c3s2) - s5(c4(c1s2s3 - c1c2c3) - s1s4)          
+
+r21 = c6(c5(c4(c2c3s1 - s1s2s3) - c1s4) - s5(c2s1s3 + c3s1s2)) - s6(c1c4 + s4(c2c3s1 - s1s2s3))
+r22 = - s6(c5(c4(c2c3s1 - s1s2s3) - c1s4) - s5(c2s1s3 + c3s1s2)) - c6(c1c4 + s4(c2c3s1 - s1s2s3))          
+r23 = s5(c4(c2c3s1 - s1s2s3) - c1s4) + c5(c2s1s3 + c3s1s2)
+
+r31 = c6(s5(c2c3 - s2s3) + c4c5(c2s3 + c3s2)) - s4s6(c2s3 + c3s2)   
+r32 = - s6(s5(c2c3 - s2s3) + c4c5(c2s3 + c3s2)) - c6s4(c2s3 + c3s2)
+r33 = c4s5(c2s3 + c3s2) - c5(c2c3 - s2s3)
+
+EEx = D1(c1c2s3 + c1c3s2) + L1c1 - D2(s5(c4(c1s2s3 - c1c2c3) - s1s4) - c5(c1c2s3 + c1c3s2)) + L2c1c2 + L3c1c2c3 - L3c1s2s3
+EEy = D1(c2s1s3 + c3s1s2) + L1s1 + D2(s5(c4(c2c3s1 - s1s2s3) - c1s4) + c5(c2s1s3 + c3s1s2)) + L2c2s1 + L3c2c3s1 - L3s1s2s3
+EEz = D0 - D2(c5(c2c3 - s2s3) - c4s5(c2s3 + c3s2)) + L2s2 - D1(c2c3 - s2s3) + L3c2s3 + L3c3s2
+
+>> 

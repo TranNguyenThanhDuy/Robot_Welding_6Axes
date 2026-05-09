@@ -8,6 +8,7 @@
 #include <sstream>
 #include <iomanip>
 //hihi
+//hihiiiiiii
 AxisController::AxisController() {
     int portDefaults[6] = {0, 0, 0, 0, 0, 0};
     unsigned char slaveDefaults[6] = {0, 1, 2, 3, 4, 5};
@@ -479,8 +480,10 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
 
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses) || !allServoOn(statuses)) return false;
-    AxisVectors compressedPaths = compressBuffer(paths, 5, 6);
-    size_t steps = compressedPaths[0].size();
+    // AxisVectors compressedPaths = compressBuffer(paths, 5, 6);
+    // size_t steps = compressedPaths[0].size();
+    const AxisVectors& runPaths = paths;
+    size_t steps = runPaths[0].size();
     
     // --- BẬT MỎ HÀN ---
     size_t outAxis = 0; 
@@ -493,7 +496,8 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
         AxisBools hasCommand{};
 
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            target[a] = compressedPaths[a][i];
+            // target[a] = compressedPaths[a][i];
+            target[a] = runPaths[a][i];
             hasCommand[a] = true;
         }
 

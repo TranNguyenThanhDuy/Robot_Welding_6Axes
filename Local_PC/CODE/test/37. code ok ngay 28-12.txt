@@ -1,0 +1,4724 @@
+// ##########################################################################################################
+//	 AUTHOR: HUỲNH QUỐC TOÀN
+//   PROJECT: 6-DOF ARM ROBOT USE RS-485 & TCP/IP PROTOCOL
+//   MCU: ESP32-32U
+//   DESCRIPTION:
+//     * Hardware:
+//       - Use Ezi-Servo Plus-R Series of FASTECH
+//       - Use 6 Driver (4 Driver EzS-NDR-60L and 2 Drivers EzS-NDR-60M)
+//       - Use 6 Servo (4 Servo EzM-60L-A-D and 2 Servo EzM-60M-A-D)
+//       - Use 2 Brake 24V for Servo Joint 2 and Joint 3
+//    * Software:
+//       - Communicate with 6-Drivers via RS-485 Protocol
+//       - Communicate with PLC and etc... via TCP/IP Protocol
+//       - Use PlatformIO on VSCode
+// ##########################################################################################################
+
+//===========================================================================================================
+//   LAST UPDATE: 22 - 12 - 2023
+//   EMAIL: huynhquoctoan26@gmail.com
+//-----------------------------------------------------------------------------------------------------------
+//   DEPENDENCY GRAPH:          |  NOTE:
+//------------------------------+----------------------------------------------------------------------------
+//   |-- ...                    | Build files, libdeps and settings env
+//   |-- lib                    |
+//      |-- FS @ 2.0.0          | [HIDE] Libraies for framework-arduinoespressif32
+//      |-- SD @ 2.0.0          | [HIDE] Libraies for framework-arduinoespressif32
+//      |-- SPI @ 2.0.0         | [HIDE] Libraies for framework-arduinoespressif32
+//      |-- ENCODER             | Header and lib source files for Read Encoder and Interrupts
+//      |-- FORWARD_KINEMATIC   | Header and lib source files for Kinematics of Robot
+//      |-- MATH                | Header and lib source files for Matrix Calculate
+//      |-- MULTIPLE_SPI        | Lib source files for SPI Communication with SD and Ethernet module
+//      |-- SERVO               | Header and lib source files for communicate with Servo via RS-485 Protocol
+//      |-- MODBUS_TCP          | Header and lib source files for ModbusTCP Protocol
+//   |-- src                    |
+//      |-- main.cpp            | <--[THIS FILE]
+//   |-- ...                    | Platformio config and etc ...
+//===========================================================================================================
+
+//===========================================================================
+//	INCLUDE LIBRARIES
+//===========================================================================
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
+#include <math.h>
+#include <Arduino.h>
+#include <Ethernet.h>
+#include <../ENCODER/Encoder.h>
+#include <../MODBUS_TCP/Modbus.h>
+#include <../MODBUS_TCP/ModbusIP.h>
+#include <../MATH/ArduinoEigenDense.h>
+#include <../MULTIPLE_SPI/Multiple_SPI.cpp>
+#include <../SERVO/Communication_Interface.h>
+#include <../FORWARD_KINEMATIC/Convert_Function.h>
+
+//===========================================================================
+//	DEFINE PINS
+//===========================================================================
+// UART FOR RS485 CONVERTER
+#define RXD2 16
+#define TXD2 17
+
+// UART FOR HMI
+#define RXD1 4
+#define TXD1 2
+
+// HAND WHEEL PULSE ENCODER
+#define CLK_ENCODER 27
+#define DT_ENCODER 25
+
+// HOME SENSOR
+#define HOME_SENSOR_J1 21 // 39
+#define HOME_SENSOR_J2 22 // 36
+#define HOME_SENSOR_J3 34 // 35
+#define HOME_SENSOR_J4 35 // 34
+#define HOME_SENSOR_J5 36 // 22
+#define HOME_SENSOR_J6 39 // 21
+
+// BUZZER
+#define BUZZER 5
+
+// RELAY
+#define RELAY_5 32
+#define RELAY_6 33
+
+// BUTTON TEACH PENDANT
+#define RED_BUTTON 15
+#define GREEN_BUTTON 26
+
+// VSPI FOR ETHERNET MODULE AND SD CARD
+#define REASSIGN_PINS
+int sck = 18;
+int miso = 19;
+int mosi = 23;
+int cs = 14;          // Chip Select Pin for SD CARD
+int cs_ethernet = 13; // Chip Select Pin for ETHERNET W5500
+
+// NO USE
+// #define RELAY_1 13
+// #define RELAY_2 18
+// #define RELAY_3 19
+// #define RELAY_4 23
+// #define SW_ENCODER
+
+//===========================================================================
+//	DEFINE SERVO ID
+//===========================================================================
+#define ID_1 1
+#define ID_2 2
+#define ID_3 3
+#define ID_4 4
+#define ID_5 5
+#define ID_6 6
+//===========================================================================
+//	DEFINE STATE
+//===========================================================================
+#define ON_SERVO 1
+#define OFF_SERVO 0
+#define DELAY_TICK_ENABLE_SERVO 100
+#define DELAY_TICK_DISABLE_SERVO 100
+#define ACCELERATION_TIME_PARAMETER 3
+#define DECELERATION_TIME_PARAMETER 4
+#define NULL_POS -1
+#define RETURN_OK 0
+#define CW 1
+#define CCW 0
+//===========================================================================
+//	DEFINE TCP STASK
+//===========================================================================
+#define TCP_TASK_POS_1 1
+#define TCP_TASK_POS_2 2
+#define TCP_TASK_POS_3 3
+#define TCP_TASK_POS_4 4
+#define TCP_TASK_POS_5 5
+#define TCP_TASK_POS_6 6
+#define TCP_TASK_POS_TG_1 7
+#define TCP_TASK_POS_TG_2 8
+#define TCP_TASK_HOME 9
+#define TCP_TASK_CALIB 10
+#define TCP_TASK_WAKEUP 11
+#define TCP_TASK_SLEEP 12
+#define TCP_TASK_ON_SERVO 13
+#define TCP_TASK_OFF_SERVO 14
+#define TCP_TASK_STOP 15
+//===========================================================================
+//	DEFINE HARDWARE_SERIAL
+//===========================================================================
+HardwareSerial HMI(1);
+//===========================================================================
+//	DEFINE VARIABLES
+//===========================================================================
+struct StructRow
+{
+    unsigned int Mark_Array[101] = {};
+    unsigned int rowNo;
+    String posName;
+    float EEx_Value;
+    float EEy_Value;
+    float EEz_Value;
+    String EE_Orientation;
+    unsigned int moveTimeValue;
+    unsigned int waitTimeValue;
+    String out1State;
+    String out2State;
+    struct EEC_R06
+    {
+        float r11, r12, r13;
+        float r21, r22, r23;
+        float r31, r32, r33;
+    } EEC_R06_Matrix;
+};
+StructRow Row_Data_T1;
+StructRow Row_Data_T2;
+StructRow Row_Data_T3;
+
+struct Struct_Fixed_Modes
+{
+    struct Home_Mode
+    {
+        // HOME THETA
+        const int Theta1 = 0, Theta2 = 155, Theta3 = -65, Theta4 = 0, Theta5 = -60, Theta6 = 0;
+    } Home;
+    struct Wakeup_Mode
+    {
+        // WAKE UP THETA
+        const int Theta1 = 0, Theta2 = 90, Theta3 = 0, Theta4 = 0, Theta5 = -90, Theta6 = 0;
+    } Wakeup;
+    struct Sleep_Mode
+    {
+        // SLEEP THETA
+        const int Theta1 = 0, Theta2 = 123, Theta3 = -33, Theta4 = 0, Theta5 = -90, Theta6 = 0;
+    } Sleep;
+} Fixed_Modes;
+
+// FOR KINEMATICS
+float d0 = 228,
+      L1 = 55, L2 = 330, L3 = 62, d1 = 330, d2 = 201;
+float POS = 90, NEG = -90;
+float theta1 = 0, theta2 = 0, theta3 = 0, theta4 = 0, theta5 = 0, theta6 = 0;
+float theta1_old = 0, theta2_old = 0, theta3_old = 0, theta4_old = 0, theta5_old = 0, theta6_old = 0;
+float theta1_FK = 0, theta2_FK = 0, theta3_FK = 0, theta4_FK = 0, theta5_FK = 0, theta6_FK = 0;
+float theta1_IK = 0, theta2_IK = 0, theta3_IK = 0, theta4_IK = 0, theta5_IK = 0, theta6_IK = 0;
+float theta1_IK_T = 0, theta2_IK_1 = 0, theta2_IK_2 = 0, theta3_IK_1 = 0, theta3_IK_2 = 0, theta5_IK_1 = 0, theta5_IK_2 = 0;
+float tolerance = 2;
+int Number_Of_Solutions = 0;
+int i = 0;
+
+// TEMPLATE MATRIX
+template <int rows, int cols>
+using MatrixSize = Eigen::Matrix<float, rows, cols>;
+
+// HAND WHEEL PULSE ENCODER
+long newPosition = 0;
+long lastPosition = 0;
+Encoder Teach_Pendant_Encoder;
+int Encoder_Position_Diff = 0;
+
+// SYSTEM STATUS [false: OFF | true: ON]
+bool SYSTEM_STATUS = false;
+
+// OUT RELAY STATUS [Out1 5V - Out2 24V] [false: OFF | true: ON]
+bool OUT1_STATUS = false;
+bool OUT2_STATUS = false;
+// UART FOR HMI
+// const int BUFFER_SIZE = 100; // Độ dài tối đa của chuỗi
+// char HMI_BUFFER[BUFFER_SIZE];
+// int bufferIndex = 0;
+bool newDataReceived = false;
+String HMI_BUFFER_DATA = "";
+String CURRENT_PAGE = "HP";
+
+// FOR MOVE SERVO
+long POS_SERVO_1 = 0, POS_SERVO_2 = 0, POS_SERVO_3 = 0, POS_SERVO_4 = 0, POS_SERVO_5 = 0, POS_SERVO_6 = 0;
+long VEL_SERVO_1 = 0, VEL_SERVO_2 = 0, VEL_SERVO_3 = 0, VEL_SERVO_4 = 0, VEL_SERVO_5 = 0, VEL_SERVO_6 = 0;
+unsigned int Speed_Selection_Mode = 1;
+unsigned int Speed = 1;
+unsigned int Speed_1 = 1;
+unsigned int Speed_2 = 1;
+unsigned int Speed_3 = 1;
+unsigned int Speed_4 = 1;
+unsigned int Speed_5 = 1;
+unsigned int Speed_6 = 1;
+float Encoder_Pulse_Resolution = 0;
+float Axis_Resolution = 0;
+unsigned int ACCEL_TIME = 500;            // Thời gian tăng tốc ms
+unsigned int DECEL_TIME = 500;            // Thời gian giảm tốc (ms)
+unsigned int Speed_Find_Home = 8000;      // Tốc độ tìm home (để quay về gần cảm biến và tiến hành dò điểm giữa cảm biến home)
+unsigned int Speed_Return_Origin = 12000; // Tốc độ quay về gốc khi xác định đã bị quay ngược hướng lúc tìm home
+unsigned int Speed_Find_Origin = 4000;    // Tốc độ đi lấy vị trí ở 2 hướng tại cảm biến home
+unsigned int Speed_Move_Origin = 2000;    // Tốc độ quay về điểm chính giữa của cảm biến khi biết vị trí 2 chiều quay tại cảm biến
+// FOR ROBOT HARDWARE
+unsigned int Pulse_Per_Revolution_PPR = 10000;
+float Gearbox_1_Ratio = 50;    // Gearbox
+float Gearbox_2_Ratio = 105.6; // 2.4*44 (Puly*Gearbox)
+float Gearbox_3_Ratio = 47.2;  // Gearbox
+float Gearbox_4_Ratio = 100;
+float Gearbox_5_Ratio = 90; // 2*45 (Puly*Gearbox)
+float Gearbox_6_Ratio = 50; // Gearbox
+
+// OTHER
+String Theta_Selection = "";
+String Axis_Selection = "";
+String EE_Selection = "";
+MatrixSize<4, 4> FK_Jog;
+MatrixSize<3, 3> R_0_6_Temp;
+MatrixSize<3, 1> EE_Target_Matrix;
+float THETA2_OFFSET = 90;
+float theta1_Init = 0, theta2_Init = 0, theta3_Init = 0, theta4_Init = 0, theta5_Init = 0, theta6_Init = 0;
+float slider1_target = 0, slider2_target = 0, slider3_target = 0, slider4_target = 0, slider5_target = 0, slider6_target = 0;
+bool EN_READY = false;
+bool DONE_ALM = false;
+bool FIND_NEAREST_SOLUTION = false;
+float Theta1_IK_READY = 0, Theta2_IK_READY = 0, Theta3_IK_READY = 0, Theta4_IK_READY = 0, Theta5_IK_READY = 0, Theta6_IK_READY = 0;
+unsigned int Run_Time_Target = 10;
+String IK_Result = "";
+float EEx_Target = 0;
+float EEy_Target = 0;
+float EEz_Target = 0;
+unsigned int row_begin = 1;
+unsigned int Table_No = 1;
+unsigned int Max_Table_No = 10;
+String Table_Name = "Jog Program";
+
+bool ETH_Connect = false, L_State = false, D_State = false;
+unsigned long interval = 500, previous_Time = 0, previous_Time_D = 0, current_Time = 0;
+
+const int HREG1_DATA_WRITE = 0;
+const int HREG2_DATA_READ = 1;
+int16_t TCP_DATA = 0;
+unsigned int Run_Mark = 0;
+#define MODBUSIP_PORT 502
+byte MAC_Address[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+IPAddress IP_Address(192, 168, 0, 20);
+IPAddress Gateway_Address(192, 168, 0, 10);
+IPAddress Subnet_Mask(255, 255, 255, 0);
+IPAddress DNS_Address = Gateway_Address;
+
+// ModbusIP object
+ModbusIP Modbus;
+EthernetClient client;
+
+//===========================================================================
+//	DEFINE FUNCTIONS
+//===========================================================================
+void Check_Change_Page_Fcns();
+String splitString(String str, String delim, uint16_t pos)
+{
+    String tmp = str;
+    for (int i = 0; i < pos; i++)
+    {
+        tmp = tmp.substring(tmp.indexOf(delim) + 1);
+        if (tmp.indexOf(delim) == -1 && i != pos - 1)
+            return "";
+    }
+    return tmp.substring(0, tmp.indexOf(delim));
+}
+String roundFloatToString(float value, unsigned int decimalPlaces)
+{
+    String stringValue = String(value); // Chuyển float thành string
+    // Tìm vị trí của dấu "."
+    int dotPosition = stringValue.indexOf('.');
+    // Nếu tìm thấy dấu ".", thực hiện xóa các ký tự sau nó
+    if (dotPosition >= 0)
+    {
+        // Tính vị trí cuối cùng của số thập phân
+        int lastDecimalPosition = dotPosition + decimalPlaces + 1;
+        // Xóa các ký tự sau vị trí cuối cùng của số thập phân
+        if (lastDecimalPosition < stringValue.length())
+            stringValue = stringValue.substring(0, lastDecimalPosition);
+        // Làm tròn: Nếu cần hiển thị 1 số 0 sau dấu chấm thập phân thì rán "0.0"
+        if (stringValue == "-0.0")
+            stringValue = "0.0";
+        // Làm tròn: Nếu cần hiển thị 2 số 0 sau dấu chấm thập phân thì rán "0.00"
+        if (stringValue == "-0.00")
+            stringValue = "0.00";
+    }
+    return stringValue;
+}
+String convertBytesToHexString(byte bytes[])
+{
+    String hexString = "";
+
+    for (int i = 0; i < 6; i++)
+    {
+        // Chuyển đổi byte thành giá trị hex và thêm vào chuỗi
+        char hex[3];
+        sprintf(hex, "%02X", bytes[i]);
+        hexString += hex;
+
+        // Nếu không phải là phần tử cuối cùng, thêm dấu ":"
+        if (i < 5)
+        {
+            hexString += ":";
+        }
+    }
+
+    return hexString;
+}
+float roundToNearestHalfDeg(float degree_target)
+{
+    float rounded = round(degree_target * 2.0) / 2.0;
+    return rounded;
+}
+void ENABLE_BUZZER(unsigned int time)
+{
+    digitalWrite(BUZZER, HIGH);
+    delay(time);
+    digitalWrite(BUZZER, LOW);
+}
+void Read_HMI()
+{
+    while (HMI.available())
+    {
+        HMI_BUFFER_DATA = HMI.readStringUntil('\n');
+        // char receivedChar = HMI.read();
+        // HMI_BUFFER[bufferIndex] = receivedChar;
+        // bufferIndex++;
+
+        // if (receivedChar == '\r')
+        // {                                   // Ký tự kết thúc từ Nextion
+        //     HMI_BUFFER[bufferIndex] = '\0'; // Kết thúc chuỗi
+        //     bufferIndex = 0;
+        // }
+        // Serial.printf("Received Data: %s\n", HMI_BUFFER_DATA);
+        newDataReceived = true;
+        // for (int i = 0; i <= HMI_BUFFER_DATA.length(); i++)
+        //   Serial.printf("Received Data Hex: %x\n", HMI_BUFFER_DATA[i]);
+
+        if (HMI_BUFFER_DATA.indexOf(0x1A) != NULL_POS || HMI_BUFFER_DATA.indexOf(0x1B) != NULL_POS || HMI_BUFFER_DATA.indexOf(0x24) != NULL_POS)
+            return;
+        else
+            ENABLE_BUZZER(10);
+        // for (int i=0; i <= HMI_BUFFER_DATA.length(); i++)
+        //   Serial.printf("Received Data Hex: %x\n", HMI_BUFFER_DATA[i]);
+        Serial.printf("Received Data: %s\n", HMI_BUFFER_DATA.c_str());
+        Check_Change_Page_Fcns();
+    }
+}
+void Write_End_Byte_HMI()
+{
+    HMI.write(0xff);
+    HMI.write(0xff);
+    HMI.write(0xff);
+}
+void Write_HMI(String page, String object, String para, String content)
+{
+    HMI.print(page + "." + object + "." + para + "=" + String('"') + content + String('"'));
+    Write_End_Byte_HMI();
+}
+void Write_HMI(String page, String object, String para, unsigned int value)
+{
+    HMI.print(page + "." + object + "." + para + "=" + String(value));
+    Write_End_Byte_HMI();
+}
+void Write_HMI(String object, String para, String content)
+{
+    HMI.print(object + "." + para + "=" + String('"') + content + String('"'));
+    Write_End_Byte_HMI();
+}
+void Write_HMI(String object, String para, unsigned int value)
+{
+    HMI.print(object + "." + para + "=" + String(value));
+    Write_End_Byte_HMI();
+}
+void Write_HMI_Val(String object, String para, float value)
+{
+    HMI.print(object + "." + para + "=" + String(value));
+    Write_End_Byte_HMI();
+}
+void Alarm_HMI(String alarm_Content)
+{
+    Write_HMI("alarm", "pco", 65504);
+    Write_HMI("alarm", "txt", alarm_Content);
+    delay(1000);
+    Write_HMI("alarm", "pco", 2016);
+    Write_HMI("alarm", "txt", "No alarm!");
+}
+void ENABLE_ALL_SERVO()
+{
+    int onNo = 0;
+    // BẬT SERVO: TỪ SERVO 1 ĐẾN SERVO 6
+    ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_1, ON_SERVO) != RETURN_OK)
+    {
+        Serial.println("ENABLE SERVO ID 1 - JOINT 1 ENABLE AGAIN");
+        delay(200);
+        onNo++;
+        if (onNo >= 10)
+        {
+            Alarm_HMI("ENABLE SERVO ID 1 FAILED!");
+            onNo = 0;
+            break;
+        }
+    }
+    onNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_2, ON_SERVO) != RETURN_OK)
+    {
+        Serial.println("ENABLE SERVO ID 2 - JOINT 2 ENABLE AGAIN");
+        delay(200);
+        onNo++;
+        if (onNo >= 10)
+        {
+            Alarm_HMI("ENABLE SERVO ID 2 FAILED!");
+            onNo = 0;
+            break;
+        }
+    }
+    onNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_3, ON_SERVO) != RETURN_OK)
+    {
+        Serial.println("ENABLE SERVO ID 3 - JOINT 3 ENABLE AGAIN");
+        delay(200);
+        onNo++;
+        if (onNo >= 10)
+        {
+            Alarm_HMI("ENABLE SERVO ID 3 FAILED!");
+            onNo = 0;
+            break;
+        }
+    }
+    onNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_4, ON_SERVO) != RETURN_OK)
+    {
+        Serial.println("ENABLE SERVO ID 4 - JOINT 4 ENABLE AGAIN");
+        delay(200);
+        onNo++;
+        if (onNo >= 10)
+        {
+            Alarm_HMI("ENABLE SERVO ID 4 FAILED!");
+            onNo = 0;
+            break;
+        }
+    }
+    onNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_5, ON_SERVO) != RETURN_OK)
+    {
+        Serial.println("ENABLE SERVO ID 5 - JOINT 5 ENABLE AGAIN");
+        delay(200);
+        onNo++;
+        if (onNo >= 10)
+        {
+            Alarm_HMI("ENABLE SERVO ID 5 FAILED!");
+            onNo = 0;
+            break;
+        }
+    }
+    onNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_ENABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_6, ON_SERVO) != RETURN_OK)
+    {
+        Serial.println("ENABLE SERVO ID 6 - JOINT 6 ENABLE AGAIN");
+        delay(200);
+        onNo++;
+        if (onNo >= 10)
+        {
+            Alarm_HMI("ENABLE SERVO ID 6 FAILED!");
+            onNo = 0;
+            break;
+        }
+    }
+}
+void DISABLE_ALL_SERVO()
+{
+    int offNo = 0;
+    // TẮT SERVO: TỪ SERVO 6 ĐẾN SERVO 1
+    ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_6, OFF_SERVO) != RETURN_OK)
+    {
+        Serial.println("DISABLE SERVO ID 6 - JOINT 6 DISABLE AGAIN");
+        delay(200);
+        offNo++;
+        if (offNo >= 10)
+        {
+            Alarm_HMI("DISABLE SERVO ID 6 FAILED!");
+            offNo = 0;
+            break;
+        }
+    }
+    offNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_5, OFF_SERVO) != RETURN_OK)
+    {
+        Serial.println("DISABLE SERVO ID 5 - JOINT 5 DISABLE AGAIN");
+        delay(200);
+        offNo++;
+        if (offNo >= 10)
+        {
+            Alarm_HMI("DISABLE SERVO ID 5 FAILED!");
+            offNo = 0;
+            break;
+        }
+    }
+    offNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_4, OFF_SERVO) != RETURN_OK)
+    {
+        Serial.println("DISABLE SERVO ID 4 - JOINT 4 DISABLE AGAIN");
+        delay(200);
+        offNo++;
+        if (offNo >= 10)
+        {
+            Alarm_HMI("DISABLE SERVO ID 4 FAILED!");
+            offNo = 0;
+            break;
+        }
+    }
+    offNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_3, OFF_SERVO) != RETURN_OK)
+    {
+        Serial.println("DISABLE SERVO ID 3 - JOINT 3 DISABLE AGAIN");
+        delay(200);
+        if (offNo >= 10)
+        {
+            Alarm_HMI("DISABLE SERVO ID 3 FAILED!");
+            offNo = 0;
+            break;
+        }
+    }
+    offNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_2, OFF_SERVO) != RETURN_OK)
+    {
+        Serial.println("DISABLE SERVO ID 2 - JOINT 2 DISABLE AGAIN");
+        delay(200);
+        if (offNo >= 10)
+        {
+            Alarm_HMI("DISABLE SERVO ID 2 FAILED!");
+            offNo = 0;
+            break;
+        }
+    }
+    offNo = 0;
+    ENABLE_BUZZER(DELAY_TICK_DISABLE_SERVO);
+    delay(50);
+    while (SERVO_ServoEnable(ID_1, OFF_SERVO) != RETURN_OK)
+    {
+        Serial.println("DISABLE SERVO ID 1 - JOINT 1 DISABLE AGAIN");
+        delay(200);
+        if (offNo >= 10)
+        {
+            Alarm_HMI("DISABLE SERVO ID 1 FAILED!");
+            offNo = 0;
+            break;
+        }
+    }
+}
+void CLEAR_ALL_POSITION()
+{
+    SERVO_ClearPosition(ID_1);
+    delay(10);
+    SERVO_ClearPosition(ID_2);
+    delay(10);
+    SERVO_ClearPosition(ID_3);
+    delay(10);
+    SERVO_ClearPosition(ID_4);
+    delay(10);
+    SERVO_ClearPosition(ID_5);
+    delay(10);
+    SERVO_ClearPosition(ID_6);
+    delay(10);
+}
+long DEG_TO_POS_1_CONV(float degree_target)
+{
+    long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_1_Ratio) / 360;
+    return pulse;
+}
+long DEG_TO_POS_2_CONV(float degree_target)
+{
+    long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_2_Ratio) / 360;
+    return pulse;
+}
+long DEG_TO_POS_3_CONV(float degree_target)
+{
+    long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_3_Ratio) / 360;
+    return pulse;
+}
+long DEG_TO_POS_4_CONV(float degree_target)
+{
+    long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_4_Ratio) / 360;
+    return pulse;
+}
+long DEG_TO_POS_5_CONV(float degree_target)
+{
+    long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_5_Ratio) / 360;
+    return pulse;
+}
+long DEG_TO_POS_6_CONV(float degree_target)
+{
+    long pulse = (degree_target * Pulse_Per_Revolution_PPR * Gearbox_6_Ratio) / 360;
+    return pulse;
+}
+float GET_THETA_1()
+{
+    SERVO_GetActualPos(ID_1, &POS_SERVO_1);
+    float theta_Servo = (float)(POS_SERVO_1 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_1_Ratio);
+    return theta_Servo;
+}
+float GET_THETA_2()
+{
+    SERVO_GetActualPos(ID_2, &POS_SERVO_2);
+    float theta_Servo = (float)(POS_SERVO_2 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_2_Ratio);
+    return theta_Servo;
+}
+float GET_THETA_3()
+{
+    SERVO_GetActualPos(ID_3, &POS_SERVO_3);
+    float theta_Servo = (float)(POS_SERVO_3 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_3_Ratio);
+    return theta_Servo;
+}
+float GET_THETA_4()
+{
+    SERVO_GetActualPos(ID_4, &POS_SERVO_4);
+    float theta_Servo = (float)(POS_SERVO_4 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_4_Ratio);
+    return theta_Servo;
+}
+float GET_THETA_5()
+{
+    SERVO_GetActualPos(ID_5, &POS_SERVO_5);
+    float theta_Servo = (float)(POS_SERVO_5 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_5_Ratio);
+    return theta_Servo;
+}
+float GET_THETA_6()
+{
+    SERVO_GetActualPos(ID_6, &POS_SERVO_6);
+    float theta_Servo = (float)(POS_SERVO_6 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_6_Ratio);
+    return theta_Servo;
+}
+float GET_SPEED_1()
+{
+    SERVO_GetActualVel(ID_1, &VEL_SERVO_1);                                                             // pps
+    float angular_Velocity = (float)(VEL_SERVO_1 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_1_Ratio); // dps = (pps*360)/PPR_Total
+    return angular_Velocity;
+}
+float GET_SPEED_2()
+{
+    SERVO_GetActualVel(ID_2, &VEL_SERVO_2);                                                             // pps
+    float angular_Velocity = (float)(VEL_SERVO_2 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_2_Ratio); // dps = (pps*360)/PPR_Total
+    return angular_Velocity;
+}
+float GET_SPEED_3()
+{
+    SERVO_GetActualVel(ID_3, &VEL_SERVO_3);                                                             // pps
+    float angular_Velocity = (float)(VEL_SERVO_3 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_3_Ratio); // dps = (pps*360)/PPR_Total
+    return angular_Velocity;
+}
+float GET_SPEED_4()
+{
+    SERVO_GetActualVel(ID_4, &VEL_SERVO_4);                                                             // pps
+    float angular_Velocity = (float)(VEL_SERVO_4 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_4_Ratio); // dps = (pps*360)/PPR_Total
+    return angular_Velocity;
+}
+float GET_SPEED_5()
+{
+    SERVO_GetActualVel(ID_5, &VEL_SERVO_5);                                                             // pps
+    float angular_Velocity = (float)(VEL_SERVO_5 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_5_Ratio); // dps = (pps*360)/PPR_Total
+    return angular_Velocity;
+}
+float GET_SPEED_6()
+{
+    SERVO_GetActualVel(ID_6, &VEL_SERVO_6);                                                             // pps
+    float angular_Velocity = (float)(VEL_SERVO_6 * 360) / (Pulse_Per_Revolution_PPR * Gearbox_6_Ratio); // dps = (pps*360)/PPR_Total
+    return angular_Velocity;
+}
+unsigned int SPEED_SERVO_1(float degree_target, float degree_target_old, unsigned int time_target)
+{
+    Serial.printf("Function 1 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                  degree_target, degree_target_old, time_target);
+    long pulse_Difference = abs(DEG_TO_POS_1_CONV(degree_target) - DEG_TO_POS_1_CONV(degree_target_old));
+    Serial.printf("Function 1 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+    unsigned int speed = pulse_Difference / time_target;
+    Serial.printf("Speed_1 = %ld\n\n", speed);
+    return speed;
+}
+unsigned int SPEED_SERVO_2(float degree_target, float degree_target_old, unsigned int time_target)
+{
+    Serial.printf("Function 2 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                  degree_target, degree_target_old, time_target);
+    long pulse_Difference = abs(DEG_TO_POS_2_CONV(degree_target) - DEG_TO_POS_2_CONV(degree_target_old));
+    Serial.printf("Function 2 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+    unsigned int speed = pulse_Difference / time_target;
+    Serial.printf("Speed_2 = %ld\n\n", speed);
+    return speed;
+}
+unsigned int SPEED_SERVO_3(float degree_target, float degree_target_old, unsigned int time_target)
+{
+    Serial.printf("Function 3 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                  degree_target, degree_target_old, time_target);
+    long pulse_Difference = abs(DEG_TO_POS_3_CONV(degree_target) - DEG_TO_POS_3_CONV(degree_target_old));
+    Serial.printf("Function 3 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+    unsigned int speed = pulse_Difference / time_target;
+    Serial.printf("Speed_3 = %ld\n\n", speed);
+    return speed;
+}
+unsigned int SPEED_SERVO_4(float degree_target, float degree_target_old, unsigned int time_target)
+{
+    Serial.printf("Function 4 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                  degree_target, degree_target_old, time_target);
+    long pulse_Difference = abs(DEG_TO_POS_4_CONV(degree_target) - DEG_TO_POS_4_CONV(degree_target_old));
+    Serial.printf("Function 4 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+    unsigned int speed = pulse_Difference / time_target;
+    Serial.printf("Speed_4 = %ld\n\n", speed);
+    return speed;
+}
+unsigned int SPEED_SERVO_5(float degree_target, float degree_target_old, unsigned int time_target)
+{
+    Serial.printf("Function 5 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                  degree_target, degree_target_old, time_target);
+    long pulse_Difference = abs(DEG_TO_POS_5_CONV(degree_target) - DEG_TO_POS_5_CONV(degree_target_old));
+    Serial.printf("Function 5 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+    unsigned int speed = pulse_Difference / time_target;
+    Serial.printf("Speed_5 = %ld\n\n", speed);
+    return speed;
+}
+unsigned int SPEED_SERVO_6(float degree_target, float degree_target_old, unsigned int time_target)
+{
+    Serial.printf("Function 6 Received: degree_target = %0.2f, degree_target_old = %0.2f, time_target = %2d\n",
+                  degree_target, degree_target_old, time_target);
+    long pulse_Difference = abs(DEG_TO_POS_6_CONV(degree_target) - DEG_TO_POS_6_CONV(degree_target_old));
+    Serial.printf("Function 6 Received: pulse_Difference = %8ld, time = %2u\n", pulse_Difference, time_target);
+    unsigned int speed = pulse_Difference / time_target;
+    Serial.printf("Speed_6 = %ld\n\n", speed);
+    return speed;
+}
+void SET_ALL_ACCELERATION_TIME(unsigned int accel_time)
+{
+    SERVO_SetParameter(ID_1, ACCELERATION_TIME_PARAMETER, accel_time);
+    SERVO_SetParameter(ID_2, ACCELERATION_TIME_PARAMETER, accel_time);
+    SERVO_SetParameter(ID_3, ACCELERATION_TIME_PARAMETER, accel_time);
+    SERVO_SetParameter(ID_4, ACCELERATION_TIME_PARAMETER, accel_time);
+    SERVO_SetParameter(ID_5, ACCELERATION_TIME_PARAMETER, accel_time);
+    SERVO_SetParameter(ID_6, ACCELERATION_TIME_PARAMETER, accel_time);
+}
+void SET_ALL_DECELERATION_TIME(unsigned int decel_time)
+{
+    SERVO_SetParameter(ID_1, DECELERATION_TIME_PARAMETER, decel_time);
+    SERVO_SetParameter(ID_2, DECELERATION_TIME_PARAMETER, decel_time);
+    SERVO_SetParameter(ID_3, DECELERATION_TIME_PARAMETER, decel_time);
+    SERVO_SetParameter(ID_4, DECELERATION_TIME_PARAMETER, decel_time);
+    SERVO_SetParameter(ID_5, DECELERATION_TIME_PARAMETER, decel_time);
+    SERVO_SetParameter(ID_6, DECELERATION_TIME_PARAMETER, decel_time);
+}
+void RESET_ALL_ALARM()
+{
+    SERVO_ServoAlarmReset(ID_1);
+    SERVO_ServoAlarmReset(ID_2);
+    SERVO_ServoAlarmReset(ID_3);
+    SERVO_ServoAlarmReset(ID_4);
+    SERVO_ServoAlarmReset(ID_5);
+    SERVO_ServoAlarmReset(ID_6);
+}
+void SAVE_ALL_PARAMETER()
+{
+    SERVO_SaveAllParameter(ID_1);
+    SERVO_SaveAllParameter(ID_2);
+    SERVO_SaveAllParameter(ID_3);
+    SERVO_SaveAllParameter(ID_4);
+    SERVO_SaveAllParameter(ID_5);
+    SERVO_SaveAllParameter(ID_6);
+}
+template <int rows, int cols>
+void printMatrix(const MatrixSize<rows, cols> &matrix)
+{
+    for (int i = 0; i < rows; ++i)
+    {
+        for (int j = 0; j < cols; ++j)
+        {
+            Serial.print(matrix(i, j), 2);
+            Serial.print('\t'); // Để tạo khoảng cách giữa các phần tử
+        }
+        Serial.println(); // Xuống dòng khi đã hoàn thành một hàng
+    }
+    Serial.println();
+}
+
+MatrixSize<4, 4> T_0_1(float a1, float alpha1, float d1, float theta1)
+{
+    MatrixSize<4, 4> transformationMatrix;
+    // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+    transformationMatrix << cosd(theta1), 0, sind(theta1), a1 * cosd(theta1),
+        sind(theta1), 0, -cosd(theta1), a1 * sind(theta1),
+        0, 1, 0, d1,
+        0, 0, 0, 1;
+
+    return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_1_2(float a2, float alpha2, float d2, float theta2)
+{
+    MatrixSize<4, 4> transformationMatrix;
+    // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+    transformationMatrix << cosd(theta2), -sind(theta2), 0, a2 * cosd(theta2),
+        sind(theta2), cosd(theta2), 0, a2 * sind(theta2),
+        0, 0, 1, 0,
+        0, 0, 0, 1;
+    return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_2_3(float a3, float alpha3, float d3, float theta3)
+{
+    MatrixSize<4, 4> transformationMatrix;
+    // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+    transformationMatrix << cosd(theta3), 0, sind(theta3), a3 * cosd(theta3),
+        sind(theta3), 0, -cosd(theta3), a3 * sind(theta3),
+        0, 1, 0, 0,
+        0, 0, 0, 1;
+    return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_3_4(float a4, float alpha4, float d4, float theta4)
+{
+    MatrixSize<4, 4> transformationMatrix;
+    // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+    transformationMatrix << cosd(theta4), 0, -sind(theta4), 0,
+        sind(theta4), 0, cosd(theta4), 0,
+        0, -1, 0, d4,
+        0, 0, 0, 1;
+    return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_4_5(float a5, float alpha5, float d5, float theta5)
+{
+    MatrixSize<4, 4> transformationMatrix;
+    // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+    transformationMatrix << cosd(theta5), 0, sind(theta5), 0,
+        sind(theta5), 0, -cosd(theta5), 0,
+        0, 1, 0, 0,
+        0, 0, 0, 1;
+    return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_5_6(float a6, float alpha6, float d6, float theta6)
+{
+    MatrixSize<4, 4> transformationMatrix;
+    // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+    transformationMatrix << cosd(theta6), -sind(theta6), 0, 0,
+        sind(theta6), cosd(theta6), 0, 0,
+        0, 0, 1, d6,
+        0, 0, 0, 1;
+    return transformationMatrix;
+}
+MatrixSize<4, 4> Forward_Kinematics(float theta1_FK, float theta2_FK, float theta3_FK, float theta4_FK, float theta5_FK, float theta6_FK)
+{
+    MatrixSize<4, 4> transformationMatrix;
+    MatrixSize<4, 4> T_0_1_Matrix = T_0_1(L1, POS, d0, theta1_FK);
+    MatrixSize<4, 4> T_1_2_Matrix = T_1_2(L2, 0, 0, theta2_FK);
+    MatrixSize<4, 4> T_2_3_Matrix = T_2_3(L3, POS, d0, theta3_FK);
+    MatrixSize<4, 4> T_3_4_Matrix = T_3_4(0, NEG, d1, theta4_FK);
+    MatrixSize<4, 4> T_4_5_Matrix = T_4_5(0, POS, 0, theta5_FK);
+    MatrixSize<4, 4> T_5_6_Matrix = T_5_6(0, 0, d2, theta6_FK);
+    transformationMatrix =
+        T_0_1_Matrix * T_1_2_Matrix * T_2_3_Matrix * T_3_4_Matrix * T_4_5_Matrix * T_5_6_Matrix;
+
+    return transformationMatrix;
+}
+bool Check_T_0_3(float theta1, float theta2, float theta3, float Wx, float Wy, float Wz)
+{
+    // Serial.printf("Check the: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n", theta1, theta2, theta3);
+    MatrixSize<4, 4> T_0_3_Matrix = T_0_1(L1, POS, d0, theta1) * T_1_2(L2, 0, 0, theta2) * T_2_3(L3, POS, d0, theta3) * T_3_4(0, NEG, d1, 0);
+    printMatrix(T_0_3_Matrix);
+    if ((T_0_3_Matrix.block<1, 1>(0, 3).value() - tolerance) <= Wx && (T_0_3_Matrix.block<1, 1>(0, 3).value() + tolerance) >= Wx)
+    {
+        if ((T_0_3_Matrix.block<1, 1>(1, 3).value() - tolerance) <= Wy && (T_0_3_Matrix.block<1, 1>(1, 3).value() + tolerance) >= Wy)
+        {
+            if ((T_0_3_Matrix.block<1, 1>(2, 3).value() - tolerance) <= Wz && (T_0_3_Matrix.block<1, 1>(2, 3).value() + tolerance) >= Wz)
+            {
+                // Serial.printf("W Position is OK: Wx_IK = %0.2f, Wy_IK = %0.2f, Wz_IK = %0.2f\n",
+                //               T_0_3_Matrix.block<1, 1>(0, 3).value(), T_0_3_Matrix.block<1, 1>(1, 3).value(), T_0_3_Matrix.block<1, 1>(2, 3).value());
+                return true;
+            }
+            else
+                return false;
+        }
+        else
+            return false;
+    }
+    else
+        return false;
+}
+
+bool Check_T_0_6(float theta1, float theta2, float theta3, float theta4, float theta5, float theta6, float EEx, float EEy, float EEz)
+{
+    // Serial.printf("Check the: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+    //               theta1, theta2, theta3, theta4, theta5, theta6);
+    MatrixSize<4, 4> T_0_6_Matrix = Forward_Kinematics(theta1, theta2, theta3, theta4, theta5, theta6);
+    printMatrix(T_0_6_Matrix);
+    if ((T_0_6_Matrix.block<1, 1>(0, 3).value() - tolerance) <= EEx && (T_0_6_Matrix.block<1, 1>(0, 3).value() + tolerance) >= EEx)
+    {
+        if ((T_0_6_Matrix.block<1, 1>(1, 3).value() - tolerance) <= EEy && (T_0_6_Matrix.block<1, 1>(1, 3).value() + tolerance) >= EEy)
+        {
+            if ((T_0_6_Matrix.block<1, 1>(2, 3).value() - tolerance) <= EEz && (T_0_6_Matrix.block<1, 1>(2, 3).value() + tolerance) >= EEz)
+            {
+                // Serial.printf("EE Position is OK: EEx_IK = %0.2f, EEy_IK = %0.2f, EEz_IK = %0.2f\n",
+                //              T_0_6_Matrix.block<1, 1>(0, 3).value(), T_0_6_Matrix.block<1, 1>(1, 3).value(), T_0_6_Matrix.block<1, 1>(2, 3).value());
+                return true;
+            }
+            else
+                return false;
+        }
+        else
+            return false;
+    }
+    else
+        return false;
+}
+
+MatrixSize<3, 3> R_0_3_Inverse(float theta1, float theta2, float theta3)
+{
+    MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+    MatrixSize<4, 4> T_0_3_Matrix = T_0_1(L1, POS, d0, theta1) * T_1_2(L2, 0, 0, theta2) * T_2_3(L3, POS, d0, theta3);
+    R_0_3_Inverse_Matrix = T_0_3_Matrix.block<3, 3>(0, 0).inverse();
+    return R_0_3_Inverse_Matrix;
+}
+
+String Inverse_Kinematics(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+{
+    // Hàm tính động học nghịch, truyền vào vị trí điểm EE (3x1) và ma trận R_0_6 (3x3)
+    Number_Of_Solutions = 0;
+    float EEx = EE_Pos_Matrix.block<1, 1>(0, 0).value();
+    float EEy = EE_Pos_Matrix.block<1, 1>(1, 0).value();
+    float EEz = EE_Pos_Matrix.block<1, 1>(2, 0).value();
+
+    bool Out_Of_Workspace_TH1 = EEx <= 0 && EEy >= 0; // Góc phần tư thứ 2
+    bool Out_Of_Workspace_TH2 = EEx <= 0 && EEy <= 0; // Góc phần tư thứ 3
+    bool Out_Of_Workspace_TH3 = EEz <= 0;             // Tọa độ Z âm
+
+    if (Out_Of_Workspace_TH1 == true || Out_Of_Workspace_TH2 == true || Out_Of_Workspace_TH3 == true)
+    {
+        if (Out_Of_Workspace_TH1 == true && Out_Of_Workspace_TH3 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+            return "OOW";
+        }
+        else if (Out_Of_Workspace_TH2 == true && Out_Of_Workspace_TH3 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+            return "OOW";
+        }
+        else if (Out_Of_Workspace_TH1 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 |\n", EEx, EEy);
+            return "OOW";
+        }
+        else if (Out_Of_Workspace_TH2 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 |\n", EEx, EEy);
+            return "OOW";
+        }
+    }
+
+    MatrixSize<3, 1> W_Pos_Matrix;
+    MatrixSize<3, 3> R_3_6_General;
+    MatrixSize<3, 3> R_3_6_Matrix;
+    MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+
+    W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+    Serial.println("EE Position Matrix: ");
+    printMatrix(EE_Pos_Matrix);
+    Serial.println("W Position Matrix: ");
+    printMatrix(W_Pos_Matrix);
+    float Wx = W_Pos_Matrix.block<1, 1>(0, 0).value();
+    float Wy = W_Pos_Matrix.block<1, 1>(1, 0).value();
+    float Wz = W_Pos_Matrix.block<1, 1>(2, 0).value();
+
+    /*----------------------------------------------- Tính Theta1 -----------------------------------------------*/
+    theta1_IK_T = atan2d(Wy, Wx);
+    Serial.printf("atan2d(%0.2f, %0.2f): %0.2f, theta1_IK_T: %0.2f\n\n", Wy, Wx, theta1_IK_T, theta1_IK_T);
+
+    /*----------------------------------------------- Tính Theta3 -----------------------------------------------*/
+    float TS_Cos_Gamma = -pow(L2, 2) - pow(L3, 2) - pow(d1, 2) + (pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+    float MS_Cos_Gamma = 2 * L2 * sqrt(pow(L3, 2) + pow(d1, 2));
+
+    float Cos_Gamma = TS_Cos_Gamma / MS_Cos_Gamma;
+    float Sin_Gamma = sqrt(1 - pow(Cos_Gamma, 2)); // Có 2 TH: Sin_Gamma = +- Sqrt(...);
+
+    float Gamma_1 = atan2d(Sin_Gamma, Cos_Gamma);  // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+    float Gamma_2 = atan2d(-Sin_Gamma, Cos_Gamma); // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+
+    float Beta = atan2d(d1, L3);
+
+    theta3_IK_1 = Gamma_1 + Beta;
+    theta3_IK_2 = Gamma_2 + Beta;
+
+    Serial.printf("Gamma_1: %0.2f, Beta: %0.2f, theta3_IK_1: %0.2f\n", Gamma_1, Beta, theta3_IK_1);
+    Serial.printf("Gamma_2: %0.2f, Beta: %0.2f, theta3_IK_2: %0.2f\n\n", Gamma_2, Beta, theta3_IK_2);
+
+    /*----------------------------------------------- Tính Theta2 -----------------------------------------------*/
+    float TS_Cos_Phi = pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2) + pow(L2, 2) - (pow(L3, 2) + pow(d1, 2));
+    float MS_Cos_Phi = 2 * L2 * sqrt(pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+
+    float Cos_Phi = TS_Cos_Phi / MS_Cos_Phi;
+    float Sin_Phi = sqrt(1 - pow(Cos_Phi, 2)); // Có 2 TH: Sin_Phi = +- Sqrt(...);
+
+    float Phi_1 = atan2d(Sin_Phi, Cos_Phi);
+    float Phi_2 = atan2d(-Sin_Phi, Cos_Phi);
+
+    float Sigma = atan2d(Wz - d0, sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1);
+
+    theta2_IK_1 = Sigma - Phi_1;
+    theta2_IK_2 = Sigma - Phi_2;
+
+    // Serial.printf("TS_Cos_Phi: %0.2f, MS_Cos_Phi: %0.2f, Cos_Phi: %0.2f, Sin_Phi: %0.2f, -Sin_Phi: %0.2f\n",TS_Cos_Phi, MS_Cos_Phi, Cos_Phi, Sin_Phi, -Sin_Phi);
+
+    Serial.printf("Sigma: %0.2f, Phi_1: %0.2f, theta2_IK_1: %0.2f\n", Sigma, Phi_1, theta2_IK_1);
+    Serial.printf("Sigma: %0.2f, Phi_2: %0.2f, theta2_IK_2: %0.2f\n\n", Sigma, Phi_2, theta2_IK_2);
+
+    // Có 4 TH nghiệm cho theta1, theta2 và theta3
+    // Bộ nghiệm 1: theta1_IK, theta2_IK_1, theta3_IK_1;
+    // Bộ nghiệm 2: theta1_IK, theta2_IK_1, theta3_IK_2;
+    // Bộ nghiệm 3: theta1_IK, theta2_IK_2, theta3_IK_1;
+    // Bộ nghiệm 4: theta1_IK, theta2_IK_2, theta3_IK_2;
+
+    // Bộ lọc nghiệm đầu tiên: Lọc theo góc giới hạn tối đa (Góc lý tưởng chưa xét đến kết cấu cơ khí)
+    if (round(theta1_IK_T) >= -180 && round(theta1_IK_T) <= 180)
+    {
+        if (round(theta2_IK_1) >= -10 && round(theta2_IK_1) <= 165)
+        {
+            if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_1;
+                theta3_IK = theta3_IK_1;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    Serial.printf("FINAL - Solution 1 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                                  theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                    Serial.println("Solution 1 is not match!");
+            }
+            else
+                Serial.println("Solution 1 is wrong!");
+            if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_1;
+                theta3_IK = theta3_IK_2;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    Serial.printf("FINAL - Solution 2 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                                  theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                    Serial.println("Solution 2 is not match!");
+            }
+            else
+                Serial.println("Solution 2 is wrong!");
+        }
+        else
+            Serial.println("Solution 1 and 2 is wrong!");
+        if (round(theta2_IK_2) >= -10 && round(theta2_IK_2) <= 165)
+        {
+            if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_2;
+                theta3_IK = theta3_IK_1;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    Serial.printf("FINAL - Solution 3 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                                  theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                    Serial.println("Solution 3 is not match!");
+            }
+            else
+                Serial.println("Solution 3 is wrong!");
+            if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_2;
+                theta3_IK = theta3_IK_2;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    Serial.printf("FINAL - Solution 4 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                                  theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                    Serial.println("Solution 4 is not match!");
+            }
+            else
+                Serial.println("Solution 4 is wrong!");
+        }
+        else
+            Serial.println("Solution 3 and 4 is wrong!");
+    }
+    else
+        Serial.println("No Solution Found!");
+
+    /*----------------------------------------------- Tính Theta4, 5, 6 -----------------------------------------------*/
+    R_3_6_General << cosd(theta4) * cosd(theta5) * cosd(theta6) - sind(theta4) * sind(theta6), -cosd(theta4) * cosd(theta5) * sind(theta6) - sind(theta4) * cosd(theta6), cosd(theta4) * sind(theta5),
+        sind(theta4) * cosd(theta5) * cosd(theta6) + cosd(theta4) * sind(theta6), -sind(theta4) * cosd(theta5) * sind(theta6) + cosd(theta4) * cosd(theta6), sind(theta4) * sind(theta5),
+        -sind(theta5) * cosd(theta6), sind(theta5) * sind(theta6), cosd(theta5);
+
+    R_0_3_Inverse_Matrix = R_0_3_Inverse(theta1_IK, theta2_IK, theta3_IK);
+
+    R_3_6_Matrix = R_0_3_Inverse_Matrix * R_0_6_Matrix;
+
+    float r13 = R_3_6_Matrix.block<1, 1>(0, 2).value();
+    float r23 = R_3_6_Matrix.block<1, 1>(1, 2).value();
+    float r33 = R_3_6_Matrix.block<1, 1>(2, 2).value();
+    float r31 = R_3_6_Matrix.block<1, 1>(2, 0).value();
+    float r32 = R_3_6_Matrix.block<1, 1>(2, 1).value();
+
+    theta4_IK = atan2d(r23, r13);
+    theta6_IK = atan2d(r32, -r31);
+    Serial.printf("Calc theta4 = %0.2f and theta6 = %0.2f\n",
+                  theta4_IK, theta6_IK);
+
+    if (FIND_NEAREST_SOLUTION == true)
+    {
+        Serial.println("FIND_NEAREST_SOLUTION !");
+        if (theta4_IK > 0)
+            theta4_IK = theta4_IK - 180;
+        else if (theta4_IK < 0)
+            theta4_IK = theta4_IK + 180;
+        else if (theta4_IK == 180 || theta4_IK == -180 || theta4_IK == 0)
+            theta4_IK = 0;
+
+        FIND_NEAREST_SOLUTION = false;
+    }
+    else
+    {
+        if (theta4_IK >= 90)
+            theta4_IK = theta4_IK - 180;
+        else if (theta4_IK <= -90)
+            theta4_IK = theta4_IK + 180;
+    }
+
+    if (theta6_IK >= 90)
+        theta6_IK = theta6_IK - 180;
+    else if (theta6_IK <= -90)
+        theta6_IK = theta6_IK + 180;
+
+    float Cos_Theta5 = r33;
+    float Sin_Theta5 = sqrt(1 - pow(Cos_Theta5, 2)); // Có 2 TH: Sin_Theta5 = +- Sqrt(...);
+
+    theta5_IK_1 = atan2d(Sin_Theta5, Cos_Theta5);
+    theta5_IK_2 = atan2d(-Sin_Theta5, Cos_Theta5);
+    Serial.printf("Wrist Solution 1: theta4_IK = %0.2f, theta5_IK_1 = %0.2f, theta6_IK = %0.2f\n",
+                  theta4_IK, theta5_IK_1, theta6_IK);
+    Serial.printf("Wrist Solution 2: theta4_IK = %0.2f, theta5_IK_2 = %0.2f, theta6_IK = %0.2f\n",
+                  theta4_IK, theta5_IK_2, theta6_IK);
+    if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_1, theta6_IK, EEx, EEy, EEz) == true)
+    {
+        theta5_IK = theta5_IK_1;
+        if (theta5_IK >= 125 || theta5_IK <= -125)
+        {
+            Serial.printf("Theta5 = %0.2f | OUT OF RANGE!", theta5_IK);
+            return "OOR";
+        }
+        Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                      theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+        String result =
+            "OK;" + String(theta1_IK) + ";" + String(theta2_IK) + ";" + String(theta3_IK) + ";" + String(theta4_IK) + ";" + String(theta5_IK) + ";" + String(theta6_IK) + ";";
+        return result;
+    }
+    else
+        Serial.println("Wrist Solution 1 is not match!");
+    if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_2, theta6_IK, EEx, EEy, EEz) == false)
+    {
+        Serial.println("Wrist Solution 2 is not match!");
+    }
+    else
+    {
+        theta5_IK = theta5_IK_2;
+        if (theta5_IK >= 125 || theta5_IK <= -125)
+        {
+            Serial.printf("Theta5 = %0.2f | OUT OF RANGE!", theta5_IK);
+            return "OOR";
+        }
+        Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+                      theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+        String result =
+            "OK;" + String(theta1_IK) + ";" + String(theta2_IK) + ";" + String(theta3_IK) + ";" + String(theta4_IK) + ";" + String(theta5_IK) + ";" + String(theta6_IK) + ";";
+        return result;
+    }
+    return "FAIL";
+}
+
+String Inverse_Kinematics_No_Debug(const MatrixSize<3, 1> &EE_Pos_Matrix, const MatrixSize<3, 3> &R_0_6_Matrix)
+{
+    Number_Of_Solutions = 0;
+    float EEx = EE_Pos_Matrix.block<1, 1>(0, 0).value();
+    float EEy = EE_Pos_Matrix.block<1, 1>(1, 0).value();
+    float EEz = EE_Pos_Matrix.block<1, 1>(2, 0).value();
+
+    bool Out_Of_Workspace_TH1 = EEx <= 0 && EEy >= 0; // Góc phần tư thứ 2
+    bool Out_Of_Workspace_TH2 = EEx <= 0 && EEy <= 0; // Góc phần tư thứ 3
+    bool Out_Of_Workspace_TH3 = EEz <= 0;             // Tọa độ Z âm
+
+    if (Out_Of_Workspace_TH1 == true || Out_Of_Workspace_TH2 == true || Out_Of_Workspace_TH3 == true)
+    {
+        if (Out_Of_Workspace_TH1 == true && Out_Of_Workspace_TH3 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+            return "OOW";
+        }
+        else if (Out_Of_Workspace_TH2 == true && Out_Of_Workspace_TH3 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 | EEz: %0.2f <= 0 |\n", EEx, EEy, EEz);
+            return "OOW";
+        }
+        else if (Out_Of_Workspace_TH1 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f >= 0 |\n", EEx, EEy);
+            return "OOW";
+        }
+        else if (Out_Of_Workspace_TH2 == true)
+        {
+            Serial.printf("OUT OF WORKSPACE! | EEx: %0.2f <= 0 | EEy: %0.2f <= 0 |\n", EEx, EEy);
+            return "OOW";
+        }
+    }
+
+    MatrixSize<3, 1> W_Pos_Matrix;
+    MatrixSize<3, 3> R_3_6_General;
+    MatrixSize<3, 3> R_3_6_Matrix;
+    MatrixSize<3, 3> R_0_3_Inverse_Matrix;
+
+    W_Pos_Matrix = EE_Pos_Matrix - d2 * R_0_6_Matrix.block<3, 1>(0, 2);
+    // Serial.println("EE Position Matrix: ");
+    printMatrix(EE_Pos_Matrix);
+    // Serial.println("W Position Matrix: ");
+    printMatrix(W_Pos_Matrix);
+    float Wx = W_Pos_Matrix.block<1, 1>(0, 0).value();
+    float Wy = W_Pos_Matrix.block<1, 1>(1, 0).value();
+    float Wz = W_Pos_Matrix.block<1, 1>(2, 0).value();
+
+    /*----------------------------------------------- Tính Theta1 -----------------------------------------------*/
+    theta1_IK_T = atan2d(Wy, Wx);
+    // Serial.printf("atan2d(%0.2f, %0.2f): %0.2f, theta1_IK_T: %0.2f\n\n", Wy, Wx, theta1_IK_T, theta1_IK_T);
+
+    /*----------------------------------------------- Tính Theta3 -----------------------------------------------*/
+    float TS_Cos_Gamma = -pow(L2, 2) - pow(L3, 2) - pow(d1, 2) + (pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+    float MS_Cos_Gamma = 2 * L2 * sqrt(pow(L3, 2) + pow(d1, 2));
+
+    float Cos_Gamma = TS_Cos_Gamma / MS_Cos_Gamma;
+    float Sin_Gamma = sqrt(1 - pow(Cos_Gamma, 2)); // Có 2 TH: Sin_Gamma = +- Sqrt(...);
+
+    float Gamma_1 = atan2d(Sin_Gamma, Cos_Gamma);  // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+    float Gamma_2 = atan2d(-Sin_Gamma, Cos_Gamma); // Có 2 TH: Gamma = atan2d(+Sin_Gamma, Cos_Gamma) và Gamma = atan2d(-Sin_Gamma, Cos_Gamma);
+
+    float Beta = atan2d(d1, L3);
+
+    theta3_IK_1 = Gamma_1 + Beta;
+    theta3_IK_2 = Gamma_2 + Beta;
+
+    // Serial.printf("Gamma_1: %0.2f, Beta: %0.2f, theta3_IK_1: %0.2f\n", Gamma_1, Beta, theta3_IK_1);
+    // Serial.printf("Gamma_2: %0.2f, Beta: %0.2f, theta3_IK_2: %0.2f\n\n", Gamma_2, Beta, theta3_IK_2);
+
+    /*----------------------------------------------- Tính Theta2 -----------------------------------------------*/
+    float TS_Cos_Phi = pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2) + pow(L2, 2) - (pow(L3, 2) + pow(d1, 2));
+    float MS_Cos_Phi = 2 * L2 * sqrt(pow(sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1, 2) + pow(Wz - d0, 2));
+
+    float Cos_Phi = TS_Cos_Phi / MS_Cos_Phi;
+    float Sin_Phi = sqrt(1 - pow(Cos_Phi, 2)); // Có 2 TH: Sin_Phi = +- Sqrt(...);
+
+    float Phi_1 = atan2d(Sin_Phi, Cos_Phi);
+    float Phi_2 = atan2d(-Sin_Phi, Cos_Phi);
+
+    float Sigma = atan2d(Wz - d0, sqrt(pow(Wx, 2) + pow(Wy, 2)) - L1);
+
+    theta2_IK_1 = Sigma - Phi_1;
+    theta2_IK_2 = Sigma - Phi_2;
+
+    // Serial.printf("TS_Cos_Phi: %0.2f, MS_Cos_Phi: %0.2f, Cos_Phi: %0.2f, Sin_Phi: %0.2f, -Sin_Phi: %0.2f\n",TS_Cos_Phi, MS_Cos_Phi, Cos_Phi, Sin_Phi, -Sin_Phi);
+
+    // Serial.printf("Sigma: %0.2f, Phi_1: %0.2f, theta2_IK_1: %0.2f\n", Sigma, Phi_1, theta2_IK_1);
+    // Serial.printf("Sigma: %0.2f, Phi_2: %0.2f, theta2_IK_2: %0.2f\n\n", Sigma, Phi_2, theta2_IK_2);
+
+    // Có 4 TH nghiệm cho theta1, theta2 và theta3
+    // Bộ nghiệm 1: theta1_IK, theta2_IK_1, theta3_IK_1;
+    // Bộ nghiệm 2: theta1_IK, theta2_IK_1, theta3_IK_2;
+    // Bộ nghiệm 3: theta1_IK, theta2_IK_2, theta3_IK_1;
+    // Bộ nghiệm 4: theta1_IK, theta2_IK_2, theta3_IK_2;
+
+    // Bộ lọc nghiệm đầu tiên: Lọc theo góc giới hạn tối đa (Góc lý tưởng chưa xét đến kết cấu cơ khí)
+    if (round(theta1_IK_T) >= -180 && round(theta1_IK_T) <= 180)
+    {
+        if (round(theta2_IK_1) >= -10 && round(theta2_IK_1) <= 165)
+        {
+            if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_1;
+                theta3_IK = theta3_IK_1;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    // Serial.printf("FINAL - Solution 1 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                    //              theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                {
+                }
+                // Serial.println("Solution 1 is not match!");
+            }
+            else
+            {
+            }
+            // Serial.println("Solution 1 is wrong!");
+            if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_1;
+                theta3_IK = theta3_IK_2;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    // Serial.printf("FINAL - Solution 2 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                    //               theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                {
+                }
+                // Serial.println("Solution 2 is not match!");
+            }
+            else
+            {
+            }
+            // Serial.println("Solution 2 is wrong!");
+        }
+        else
+        {
+        }
+        // Serial.println("Solution 1 and 2 is wrong!");
+        if (round(theta2_IK_2) >= -10 && round(theta2_IK_2) <= 165)
+        {
+            if (round(theta3_IK_1) >= -90 && round(theta3_IK_1) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_2;
+                theta3_IK = theta3_IK_1;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    // Serial.printf("FINAL - Solution 3 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                    //               theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                {
+                }
+                // Serial.println("Solution 3 is not match!");
+            }
+            else
+            {
+            }
+            // Serial.println("Solution 3 is wrong!");
+            if (round(theta3_IK_2) >= -90 && round(theta3_IK_2) <= 90)
+            {
+                theta1_IK = theta1_IK_T;
+                theta2_IK = theta2_IK_2;
+                theta3_IK = theta3_IK_2;
+                if (Check_T_0_3(theta1_IK, theta2_IK, theta3_IK, Wx, Wy, Wz) == true)
+                {
+                    // Serial.printf("FINAL - Solution 4 Found: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f\n\n",
+                    //               theta1_IK, theta2_IK, theta3_IK);
+                    Number_Of_Solutions++;
+                }
+                else
+                {
+                }
+                // Serial.println("Solution 4 is not match!");
+            }
+            else
+            {
+            }
+            // Serial.println("Solution 4 is wrong!");
+        }
+        else
+        {
+        }
+        // Serial.println("Solution 3 and 4 is wrong!");
+    }
+    else
+    {
+    }
+    // Serial.println("No Solution Found!");
+
+    /*----------------------------------------------- Tính Theta4, 5, 6 -----------------------------------------------*/
+    R_3_6_General << cosd(theta4) * cosd(theta5) * cosd(theta6) - sind(theta4) * sind(theta6), -cosd(theta4) * cosd(theta5) * sind(theta6) - sind(theta4) * cosd(theta6), cosd(theta4) * sind(theta5),
+        sind(theta4) * cosd(theta5) * cosd(theta6) + cosd(theta4) * sind(theta6), -sind(theta4) * cosd(theta5) * sind(theta6) + cosd(theta4) * cosd(theta6), sind(theta4) * sind(theta5),
+        -sind(theta5) * cosd(theta6), sind(theta5) * sind(theta6), cosd(theta5);
+
+    R_0_3_Inverse_Matrix = R_0_3_Inverse(theta1_IK, theta2_IK, theta3_IK);
+
+    R_3_6_Matrix = R_0_3_Inverse_Matrix * R_0_6_Matrix;
+
+    float r13 = R_3_6_Matrix.block<1, 1>(0, 2).value();
+    float r23 = R_3_6_Matrix.block<1, 1>(1, 2).value();
+    float r33 = R_3_6_Matrix.block<1, 1>(2, 2).value();
+    float r31 = R_3_6_Matrix.block<1, 1>(2, 0).value();
+    float r32 = R_3_6_Matrix.block<1, 1>(2, 1).value();
+
+    theta4_IK = atan2d(r23, r13);
+    theta6_IK = atan2d(r32, -r31);
+    // Serial.printf("Calc theta4 = %0.2f and theta6 = %0.2f\n",
+    //               theta4_IK, theta6_IK);
+
+    // Note:
+    if (theta4_IK >= 90)
+        theta4_IK = theta4_IK - 180;
+    else if (theta4_IK <= -90)
+        theta4_IK = theta4_IK + 180;
+    // else if (theta4_IK > -90 && theta4_IK < 90)
+    // {
+    //   if ()
+    // }
+
+    if (theta6_IK >= 90)
+        theta6_IK = theta6_IK - 180;
+    else if (theta6_IK <= -90)
+        theta6_IK = theta6_IK + 180;
+
+    // if (theta6_IK >= 120)
+    //   theta6_IK = theta6_IK - 180;
+    float Cos_Theta5 = r33;
+    float Sin_Theta5 = sqrt(1 - pow(Cos_Theta5, 2)); // Có 2 TH: Sin_Theta5 = +- Sqrt(...);
+
+    theta5_IK_1 = atan2d(Sin_Theta5, Cos_Theta5);
+    theta5_IK_2 = atan2d(-Sin_Theta5, Cos_Theta5);
+    // Serial.printf("Wrist Solution 1: theta4_IK = %0.2f, theta5_IK_1 = %0.2f, theta6_IK = %0.2f\n",
+    //               theta4_IK, theta5_IK_1, theta6_IK);
+    // Serial.printf("Wrist Solution 2: theta4_IK = %0.2f, theta5_IK_2 = %0.2f, theta6_IK = %0.2f\n",
+    //               theta4_IK, theta5_IK_2, theta6_IK);
+    if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_1, theta6_IK, EEx, EEy, EEz) == true)
+    {
+        theta5_IK = theta5_IK_1;
+        if (theta5_IK >= 125 || theta5_IK <= -125)
+        {
+            // Serial.printf("Theta5 = %0.2f | OUT OF RANGE!", theta5_IK);
+            return "OOR";
+        }
+        // Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+        //               theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+        String result =
+            "OK;" + String(theta1_IK) + ";" + String(theta2_IK) + ";" + String(theta3_IK) + ";" + String(theta4_IK) + ";" + String(theta5_IK) + ";" + String(theta6_IK) + ";";
+        return result;
+    }
+    else
+    {
+    }
+    // Serial.println("Wrist Solution 1 is not match!");
+    if (Check_T_0_6(theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK_2, theta6_IK, EEx, EEy, EEz) == false)
+    {
+        // Serial.println("Wrist Solution 2 is not match!");
+    }
+    else
+    {
+        theta5_IK = theta5_IK_2;
+        if (theta5_IK >= 125 || theta5_IK <= -125)
+        {
+            // Serial.printf("Theta5 = %0.2f | OUT OF RANGE!", theta5_IK);
+            return "OOR";
+        }
+        // Serial.printf("IK DONE! - Result: theta1 = %0.2f, theta2 = %0.2f, theta3 = %0.2f, theta4 = %0.2f, theta5 = %0.2f, theta6 = %0.2f\n",
+        //               theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK);
+        String result =
+            "OK;" + String(theta1_IK) + ";" + String(theta2_IK) + ";" + String(theta3_IK) + ";" + String(theta4_IK) + ";" + String(theta5_IK) + ";" + String(theta6_IK) + ";";
+        return result;
+    }
+    return "FAIL";
+}
+
+void clearBufferData()
+{
+    // memset(HMI_BUFFER, 0, sizeof(HMI_BUFFER));
+    HMI_BUFFER_DATA = "";
+}
+void Update_System_Status()
+{
+    if (SYSTEM_STATUS == true)
+    {
+        Write_HMI("status", "pco", 2016);
+        Write_HMI("status", "txt", "ON");
+    }
+    else
+    {
+        Write_HMI("status", "pco", 63488);
+        Write_HMI("status", "txt", "OFF");
+    }
+}
+void Update_Out_Relay_Status()
+{
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("OUT1") != NULL_POS)
+    {
+        OUT1_STATUS = !OUT1_STATUS;
+        digitalWrite(RELAY_5, OUT1_STATUS);
+        ENABLE_BUZZER(150);
+        if (OUT1_STATUS == true)
+        {
+            Write_HMI("out1", "pco", 2016);
+            Write_HMI("out1", "txt", "ON");
+        }
+        else
+        {
+            Write_HMI("out1", "pco", 63488);
+            Write_HMI("out1", "txt", "OFF");
+        }
+        clearBufferData();
+    }
+    else
+    {
+        if (OUT1_STATUS == true)
+        {
+            Write_HMI("out1", "pco", 2016);
+            Write_HMI("out1", "txt", "ON");
+        }
+        else
+        {
+            Write_HMI("out1", "pco", 63488);
+            Write_HMI("out1", "txt", "OFF");
+        }
+    }
+
+    if (HMI_BUFFER_DATA.indexOf("OUT2") != NULL_POS)
+    {
+        OUT2_STATUS = !OUT2_STATUS;
+        digitalWrite(RELAY_6, OUT2_STATUS);
+        ENABLE_BUZZER(150);
+        if (OUT2_STATUS == true)
+        {
+            Write_HMI("out2", "pco", 2016);
+            Write_HMI("out2", "txt", "ON");
+        }
+        else
+        {
+            Write_HMI("out2", "pco", 63488);
+            Write_HMI("out2", "txt", "OFF");
+        }
+        clearBufferData();
+    }
+    else
+    {
+        if (OUT2_STATUS == true)
+        {
+            Write_HMI("out2", "pco", 2016);
+            Write_HMI("out2", "txt", "ON");
+        }
+        else
+        {
+            Write_HMI("out2", "pco", 63488);
+            Write_HMI("out2", "txt", "OFF");
+        }
+    }
+}
+void Update_Data_Table(unsigned int row_begin, unsigned int row_end);
+void Check_Change_Page_Fcns()
+{
+    if (HMI_BUFFER_DATA.indexOf("HP") != NULL_POS)
+    {
+        CURRENT_PAGE = "HP";
+        Update_System_Status();
+        Update_Out_Relay_Status();
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("KI_SLI") != NULL_POS)
+    {
+        CURRENT_PAGE = "KI_SLI";
+        Write_HMI("st1", "maxval", 180); // 90
+        Write_HMI("st1", "minval", 0);   //-90
+        Write_HMI("st2", "maxval", 135); // 135
+        Write_HMI("st2", "minval", 0);   // 0
+        Write_HMI("st3", "maxval", 90);  // 45
+        Write_HMI("st3", "minval", 0);   //-45
+        Write_HMI("st4", "maxval", 180); // 90
+        Write_HMI("st4", "minval", 0);   //-90
+        Write_HMI("st5", "maxval", 250); // 125
+        Write_HMI("st5", "minval", 0);   //-125
+        Write_HMI("st6", "maxval", 360); // 180
+        Write_HMI("st6", "minval", 0);   //-180
+
+        Write_HMI("st1", "bco", 8518);
+        Write_HMI("st1", "bco1", 65535);
+        Write_HMI("st2", "bco", 8518);
+        Write_HMI("st2", "bco1", 65535);
+        Write_HMI("st3", "bco", 8518);
+        Write_HMI("st3", "bco1", 65535);
+        Write_HMI("st4", "bco", 8518);
+        Write_HMI("st4", "bco1", 65535);
+        Write_HMI("st5", "bco", 8518);
+        Write_HMI("st5", "bco1", 65535);
+        Write_HMI("st6", "bco", 8518);
+        Write_HMI("st6", "bco1", 65535);
+
+        Write_HMI("st1", "val", (unsigned int)map(GET_THETA_1(), -90, 90, 0, 180));
+        Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+        slider1_target = GET_THETA_1();
+        Write_HMI("st2", "val", (unsigned int)map(GET_THETA_2() + THETA2_OFFSET, 0, 135, 0, 135));
+        Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+        slider2_target = GET_THETA_2() + THETA2_OFFSET;
+        Write_HMI("st3", "val", (unsigned int)map(GET_THETA_3(), -45, 45, 0, 90));
+        Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+        slider3_target = GET_THETA_3();
+        Write_HMI("st4", "val", (unsigned int)map(GET_THETA_4(), -90, 90, 0, 180));
+        Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+        slider4_target = GET_THETA_4();
+        Write_HMI("st5", "val", (unsigned int)map(GET_THETA_5(), -125, 125, 0, 250));
+        Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+        slider5_target = GET_THETA_5();
+        Write_HMI("st6", "val", (unsigned int)map(GET_THETA_6(), -180, 180, 0, 360));
+        Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+        slider6_target = GET_THETA_6();
+        SET_ALL_ACCELERATION_TIME(600);
+        Update_System_Status();
+        Update_Out_Relay_Status();
+        SET_ALL_DECELERATION_TIME(600);
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("KI_ENC") != NULL_POS)
+    {
+        CURRENT_PAGE = "KI_ENC";
+        Theta_Selection = "ST1";
+        SET_ALL_ACCELERATION_TIME(600);
+        Update_System_Status();
+        Update_Out_Relay_Status();
+        SET_ALL_DECELERATION_TIME(600);
+        Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+        Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+        Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+        Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+        Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+        Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+        FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+        Write_HMI("xfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 3).value(), 1));
+        Write_HMI("yfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 3).value(), 1));
+        Write_HMI("zfk", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 3).value(), 1));
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("EEOP") != NULL_POS)
+    {
+        CURRENT_PAGE = "EEOP";
+        Theta_Selection = "EET4";
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("BP") != NULL_POS)
+    {
+        CURRENT_PAGE = "BP";
+        Speed_Selection_Mode = 1;
+        SET_ALL_ACCELERATION_TIME(80);
+        Update_System_Status();
+        Update_Out_Relay_Status();
+        SET_ALL_DECELERATION_TIME(80);
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("PP") != NULL_POS)
+    {
+        // row_begin = 1;
+        // Table_Name = "Jog Program";
+        Write_HMI("tablename", "txt", Table_Name);
+        Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+        Update_Data_Table(row_begin, row_begin + 9);
+        CURRENT_PAGE = "PP";
+        SET_ALL_ACCELERATION_TIME(600);
+        Update_System_Status();
+        SET_ALL_DECELERATION_TIME(600);
+        Update_Data_Table(row_begin, row_begin + 9);
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("EP") != NULL_POS)
+    {
+        CURRENT_PAGE = "EP";
+        Write_HMI("ethst", "pco", 63488);
+        Write_HMI("ethst", "txt", "Disconnected!");
+        Write_HMI("ethbt", "txt", "Connect");
+        Write_HMI("out1", "pco", digitalRead(RELAY_5) ? 2016 : 63488);
+        Write_HMI("out1", "txt", String((digitalRead(RELAY_5) ? "ON" : "OFF")));
+        Write_HMI("out2", "pco", digitalRead(RELAY_6) ? 2016 : 63488);
+        Write_HMI("out2", "txt", String((digitalRead(RELAY_6) ? "ON" : "OFF")));
+        Update_System_Status();
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("AP") != NULL_POS)
+    {
+        CURRENT_PAGE = "AP";
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("DEBUG") != NULL_POS)
+    {
+        CURRENT_PAGE = "DEBUG";
+        clearBufferData();
+    }
+}
+template <typename Fixed_Modes_Fcns>
+void Move_Robot_Fixed_Modes(const Fixed_Modes_Fcns &fixed_modes, unsigned int speed)
+{
+    Serial.println("Move_Robot_Fixed_Modes");
+    SET_ALL_ACCELERATION_TIME(200);
+    SET_ALL_DECELERATION_TIME(400);
+    theta1_old = GET_THETA_1();
+    theta2_old = GET_THETA_2() + THETA2_OFFSET;
+    theta3_old = GET_THETA_3();
+    theta4_old = GET_THETA_4();
+    theta5_old = GET_THETA_5();
+    theta6_old = GET_THETA_6();
+
+    Speed_1 = SPEED_SERVO_1(fixed_modes.Theta1, theta1_old, speed);
+    Speed_2 = SPEED_SERVO_2(fixed_modes.Theta2 - THETA2_OFFSET, theta2_old - THETA2_OFFSET, speed);
+    Speed_3 = SPEED_SERVO_3(fixed_modes.Theta3, theta3_old, speed);
+    Speed_4 = SPEED_SERVO_4(fixed_modes.Theta4, theta4_old, speed);
+    Speed_5 = SPEED_SERVO_5(fixed_modes.Theta5, theta5_old, speed);
+    Speed_6 = SPEED_SERVO_6(fixed_modes.Theta6, theta6_old, speed);
+
+    SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_POS_1_CONV(fixed_modes.Theta1), Speed_1);
+    delayMicroseconds(1500);
+    SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_POS_2_CONV(fixed_modes.Theta2 - THETA2_OFFSET), Speed_2);
+    delayMicroseconds(1500);
+    SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_POS_3_CONV(fixed_modes.Theta3), Speed_3);
+    delayMicroseconds(1500);
+    SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(fixed_modes.Theta4), Speed_4);
+    delayMicroseconds(1500);
+    SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(fixed_modes.Theta5), Speed_5);
+    delayMicroseconds(1500);
+    SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(fixed_modes.Theta6), Speed_6);
+    delayMicroseconds(1500);
+    clearBufferData();
+}
+void MOVE_ORIGIN_SERVO_1()
+{
+    do
+    {
+        SERVO_MoveVelocity(ID_1, Speed_Find_Origin, CW);
+    } while (digitalRead(HOME_SENSOR_J1) == true);
+    SERVO_MoveStop(ID_1);
+    Write_HMI("j1h", "bco", (digitalRead(HOME_SENSOR_J1) ? 2016 : 8518));
+    long CW_Pos = 0;
+    SERVO_GetActualPos(ID_1, &CW_Pos);
+
+    do
+    {
+        SERVO_MoveVelocity(ID_1, Speed_Find_Origin, CCW);
+    } while (digitalRead(HOME_SENSOR_J1) == false);
+    Write_HMI("j1h", "bco", (digitalRead(HOME_SENSOR_J1) ? 2016 : 8518));
+
+    do
+    {
+        SERVO_MoveVelocity(ID_1, Speed_Find_Origin, CCW);
+    } while (digitalRead(HOME_SENSOR_J1) == true);
+    SERVO_MoveStop(ID_1);
+    Write_HMI("j1h", "bco", (digitalRead(HOME_SENSOR_J1) ? 2016 : 8518));
+
+    long CCW_Pos = 0;
+    SERVO_GetActualPos(ID_1, &CCW_Pos);
+    // Serial.printf("Diff Pos: %ld\n", abs(CW_Pos - CCW_Pos));
+    delay(200);
+    SERVO_MoveSingleAxisIncPos(ID_1, (long)round(abs(CW_Pos - CCW_Pos) / 2), Speed_Move_Origin);
+    while (GET_SPEED_1() != 0)
+    {
+        Write_HMI("j1h", "bco", (digitalRead(HOME_SENSOR_J1) ? 2016 : 8518));
+    }
+    delay(100);
+    SERVO_ClearPosition(ID_1);
+    Write_HMI("t1", "pco", 2016);
+    Write_HMI("t1", "txt", "DONE");
+    Write_HMI("j1h", "bco", (digitalRead(HOME_SENSOR_J1) ? 2016 : 8518));
+    ENABLE_BUZZER(200);
+    delay(200);
+    ENABLE_BUZZER(200);
+}
+void MOVE_ORIGIN_SERVO_2()
+{
+    do
+    {
+        SERVO_MoveVelocity(ID_2, Speed_Find_Origin * 2, CW);
+    } while (digitalRead(HOME_SENSOR_J2) == true);
+    SERVO_MoveStop(ID_2);
+    Write_HMI("j2h", "bco", (digitalRead(HOME_SENSOR_J2) ? 2016 : 8518));
+    long CW_Pos = 0;
+    SERVO_GetActualPos(ID_2, &CW_Pos);
+
+    do
+    {
+        SERVO_MoveVelocity(ID_2, Speed_Find_Origin * 2, CCW);
+    } while (digitalRead(HOME_SENSOR_J2) == false);
+    Write_HMI("j2h", "bco", (digitalRead(HOME_SENSOR_J2) ? 2016 : 8518));
+    do
+    {
+        SERVO_MoveVelocity(ID_2, Speed_Find_Origin * 2, CCW);
+    } while (digitalRead(HOME_SENSOR_J2) == true);
+    SERVO_MoveStop(ID_2);
+    Write_HMI("j2h", "bco", (digitalRead(HOME_SENSOR_J2) ? 2016 : 8518));
+
+    long CCW_Pos = 0;
+    SERVO_GetActualPos(ID_2, &CCW_Pos);
+    Serial.printf("Diff Pos: %ld\n", abs(CW_Pos - CCW_Pos));
+    delay(200);
+    SERVO_MoveSingleAxisIncPos(ID_2, (long)round(abs(CW_Pos - CCW_Pos) / 2), (unsigned long)Speed_Move_Origin * 2);
+    Serial.println("Move to origin");
+    while (GET_SPEED_2() != 0)
+    {
+        Write_HMI("j2h", "bco", (digitalRead(HOME_SENSOR_J2) ? 2016 : 8518));
+    }
+    delay(100);
+    SERVO_ClearPosition(ID_2);
+    Write_HMI("t2", "pco", 2016);
+    Write_HMI("t2", "txt", "DONE");
+    Write_HMI("j2h", "bco", (digitalRead(HOME_SENSOR_J2) ? 2016 : 8518));
+    ENABLE_BUZZER(200);
+    delay(200);
+    ENABLE_BUZZER(200);
+}
+void MOVE_ORIGIN_SERVO_3()
+{
+    do
+    {
+        SERVO_MoveVelocity(ID_3, Speed_Find_Origin, CW);
+    } while (digitalRead(HOME_SENSOR_J3) == true);
+    SERVO_MoveStop(ID_3);
+    Write_HMI("j3h", "bco", (digitalRead(HOME_SENSOR_J3) ? 2016 : 8518));
+
+    long CW_Pos = 0;
+    SERVO_GetActualPos(ID_3, &CW_Pos);
+
+    do
+    {
+        SERVO_MoveVelocity(ID_3, Speed_Find_Origin, CCW);
+    } while (digitalRead(HOME_SENSOR_J3) == false);
+    Write_HMI("j3h", "bco", (digitalRead(HOME_SENSOR_J3) ? 2016 : 8518));
+    do
+    {
+        SERVO_MoveVelocity(ID_3, Speed_Find_Origin, CCW);
+    } while (digitalRead(HOME_SENSOR_J3) == true);
+    SERVO_MoveStop(ID_3);
+    Write_HMI("j3h", "bco", (digitalRead(HOME_SENSOR_J3) ? 2016 : 8518));
+
+    long CCW_Pos = 0;
+    SERVO_GetActualPos(ID_3, &CCW_Pos);
+    Serial.printf("Diff Pos: %ld\n", abs(CW_Pos - CCW_Pos));
+    delay(200);
+    SERVO_MoveSingleAxisIncPos(ID_3, (long)round(abs(CW_Pos - CCW_Pos) / 2), (unsigned long)Speed_Move_Origin);
+    Serial.println("Move to origin");
+    while (GET_SPEED_3() != 0)
+    {
+        Write_HMI("j3h", "bco", (digitalRead(HOME_SENSOR_J3) ? 2016 : 8518));
+    }
+    delay(100);
+    SERVO_ClearPosition(ID_3);
+    Write_HMI("t3", "pco", 2016);
+    Write_HMI("t3", "txt", "DONE");
+    Write_HMI("j3h", "bco", (digitalRead(HOME_SENSOR_J3) ? 2016 : 8518));
+    ENABLE_BUZZER(200);
+    delay(200);
+    ENABLE_BUZZER(200);
+}
+void MOVE_ORIGIN_SERVO_4()
+{
+    do
+    {
+        SERVO_MoveVelocity(ID_4, Speed_Find_Origin * 2, CW);
+    } while (digitalRead(HOME_SENSOR_J4) == true);
+    SERVO_MoveStop(ID_4);
+    Write_HMI("j4h", "bco", (digitalRead(HOME_SENSOR_J4) ? 2016 : 8518));
+
+    long CW_Pos = 0;
+    SERVO_GetActualPos(ID_4, &CW_Pos);
+
+    do
+    {
+        SERVO_MoveVelocity(ID_4, Speed_Find_Origin * 2, CCW);
+    } while (digitalRead(HOME_SENSOR_J4) == false);
+    Write_HMI("j4h", "bco", (digitalRead(HOME_SENSOR_J4) ? 2016 : 8518));
+
+    do
+    {
+        SERVO_MoveVelocity(ID_4, Speed_Find_Origin * 2, CCW);
+    } while (digitalRead(HOME_SENSOR_J4) == true);
+    SERVO_MoveStop(ID_4);
+    Write_HMI("j4h", "bco", (digitalRead(HOME_SENSOR_J4) ? 2016 : 8518));
+
+    long CCW_Pos = 0;
+    SERVO_GetActualPos(ID_4, &CCW_Pos);
+    Serial.printf("Diff Pos: %ld\n", abs(CW_Pos - CCW_Pos));
+    delay(200);
+    SERVO_MoveSingleAxisIncPos(ID_4, (long)round(abs(CW_Pos - CCW_Pos) / 2), (unsigned long)Speed_Move_Origin * 2);
+    Serial.println("Move to origin");
+    while (GET_SPEED_4() != 0)
+    {
+        Write_HMI("j4h", "bco", (digitalRead(HOME_SENSOR_J4) ? 2016 : 8518));
+    }
+    delay(100);
+    SERVO_ClearPosition(ID_4);
+    Write_HMI("t4", "pco", 2016);
+    Write_HMI("t4", "txt", "DONE");
+    Write_HMI("j4h", "bco", (digitalRead(HOME_SENSOR_J4) ? 2016 : 8518));
+    ENABLE_BUZZER(200);
+    delay(200);
+    ENABLE_BUZZER(200);
+}
+void MOVE_ORIGIN_SERVO_5()
+{
+    do
+    {
+        SERVO_MoveVelocity(ID_5, Speed_Find_Origin * 2, CW);
+    } while (digitalRead(HOME_SENSOR_J5) == true);
+    SERVO_MoveStop(ID_5);
+    Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+
+    long CW_Pos = 0;
+    SERVO_GetActualPos(ID_5, &CW_Pos);
+
+    do
+    {
+        SERVO_MoveVelocity(ID_5, Speed_Find_Origin * 2, CCW);
+    } while (digitalRead(HOME_SENSOR_J5) == false);
+    Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+    do
+    {
+        SERVO_MoveVelocity(ID_5, Speed_Find_Origin * 2, CCW);
+    } while (digitalRead(HOME_SENSOR_J5) == true);
+    SERVO_MoveStop(ID_5);
+    Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+
+    long CCW_Pos = 0;
+    SERVO_GetActualPos(ID_5, &CCW_Pos);
+    Serial.printf("Diff Pos: %ld\n", abs(CW_Pos - CCW_Pos));
+    delay(200);
+    SERVO_MoveSingleAxisIncPos(ID_5, (long)round(abs(CW_Pos - CCW_Pos) / 2), (unsigned long)Speed_Move_Origin * 2);
+    Serial.println("Move to origin");
+    while (GET_SPEED_5() != 0)
+    {
+        Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+    }
+    delay(50);
+    SERVO_ClearPosition(ID_5);
+    delay(50);
+
+    SERVO_MoveSingleAxisIncPos(ID_5, DEG_TO_POS_5_CONV(90), 125000);
+    delay(100);
+    while (GET_SPEED_5() != 0)
+    {
+        Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+    }
+    SERVO_ClearPosition(ID_5);
+    ENABLE_BUZZER(100);
+    delay(500);
+    Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+    SERVO_MoveSingleAxisIncPos(ID_5, DEG_TO_POS_5_CONV(-90), 125000);
+    // SERVO_SetActualPos(ID_5, DEG_TO_POS_5_CONV(-90));
+    // delay(100);
+    while (GET_SPEED_5() != 0)
+    {
+        Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+    }
+    // for (int i = 0; i < 1000; i++)
+    //   Serial.printf("GET THETA 5: %f\n", GET_THETA_5());
+    // delay(100000);
+    Write_HMI("t5", "pco", 2016);
+    Write_HMI("t5", "txt", "DONE");
+    Write_HMI("j5h", "bco", (digitalRead(HOME_SENSOR_J5) ? 2016 : 8518));
+    ENABLE_BUZZER(200);
+    delay(200);
+    ENABLE_BUZZER(200);
+}
+void MOVE_ORIGIN_SERVO_6()
+{
+    do
+    {
+        SERVO_MoveVelocity(ID_6, Speed_Find_Origin, CW);
+    } while (digitalRead(HOME_SENSOR_J6) == true);
+    SERVO_MoveStop(ID_6);
+    Write_HMI("j6h", "bco", (digitalRead(HOME_SENSOR_J6) ? 2016 : 8518));
+
+    long CW_Pos = 0;
+    SERVO_GetActualPos(ID_6, &CW_Pos);
+
+    do
+    {
+        SERVO_MoveVelocity(ID_6, Speed_Find_Origin, CCW);
+    } while (digitalRead(HOME_SENSOR_J6) == false);
+    Write_HMI("j6h", "bco", (digitalRead(HOME_SENSOR_J6) ? 2016 : 8518));
+
+    do
+    {
+        SERVO_MoveVelocity(ID_6, Speed_Find_Origin, CCW);
+    } while (digitalRead(HOME_SENSOR_J6) == true);
+    SERVO_MoveStop(ID_6);
+    Write_HMI("j6h", "bco", (digitalRead(HOME_SENSOR_J6) ? 2016 : 8518));
+
+    long CCW_Pos = 0;
+    SERVO_GetActualPos(ID_6, &CCW_Pos);
+    // Serial.printf("Diff Pos: %ld\n", abs(CW_Pos - CCW_Pos));
+    delay(200);
+    SERVO_MoveSingleAxisIncPos(ID_6, (long)round(abs(CW_Pos - CCW_Pos) / 2), Speed_Move_Origin);
+    while (GET_SPEED_6() != 0)
+    {
+        Write_HMI("j6h", "bco", (digitalRead(HOME_SENSOR_J6) ? 2016 : 8518));
+    }
+    delay(100);
+    SERVO_ClearPosition(ID_6);
+    Write_HMI("t6", "pco", 2016);
+    Write_HMI("t6", "txt", "DONE");
+    Write_HMI("j6h", "bco", (digitalRead(HOME_SENSOR_J6) ? 2016 : 8518));
+    ENABLE_BUZZER(200);
+    delay(200);
+    ENABLE_BUZZER(200);
+}
+void Joint_1_Calibration()
+{
+    Write_HMI("t1", "pco", 63488);
+    Write_HMI("t1", "txt", "Calib..");
+    if (digitalRead(HOME_SENSOR_J1) == true)
+    {
+        MOVE_ORIGIN_SERVO_1();
+    }
+    else
+    {
+        long Act_Pos = 0;
+        float Theta_Start_Move = 0;
+        float Theta_Moving = 0;
+        SERVO_GetActualPos(ID_1, &Act_Pos);
+        Serial.printf("Act Pos: %ld\n", Act_Pos);
+        Theta_Start_Move = GET_THETA_1();
+        if (Act_Pos <= 0)
+        {
+            // do
+            // {
+            //   SERVO_MoveSingleAxisAbsPos(ID_1, 0, Speed_Find_Home);
+            // } while (digitalRead(HOME_SENSOR_J1) == false);
+            // SERVO_MoveStop(ID_1);
+            do
+            {
+                SERVO_MoveVelocity(ID_1, Speed_Find_Home, CW);
+                if (Theta_Moving <= 75)
+                    Theta_Moving = abs(Theta_Start_Move - GET_THETA_1());
+                else
+                {
+                    SERVO_MoveStop(ID_1);
+                    do
+                    {
+                        SERVO_MoveVelocity(ID_1, Speed_Return_Origin, CCW);
+                    } while (digitalRead(HOME_SENSOR_J1) == false);
+                }
+            } while (digitalRead(HOME_SENSOR_J1) == false);
+            //       do
+            // {
+            //   SERVO_MoveVelocity(ID_1, Speed_Find_Home, CW);
+            //   if (Theta_Moving <= 30)
+            //     Theta_Moving = abs(Theta_Start_Move - GET_THETA_1());
+            //   else
+            //   {
+            //     SERVO_MoveStop(ID_1);
+            //     do
+            //     {
+            //       SERVO_MoveVelocity(ID_1, Speed_Return_Origin, CCW);
+            //     } while (digitalRead(HOME_SENSOR_J1) == false);
+            //   }
+            // } while (digitalRead(HOME_SENSOR_J1) == false);
+            SERVO_MoveStop(ID_1);
+            MOVE_ORIGIN_SERVO_1();
+            Theta_Moving = 0;
+        }
+        else
+        {
+            // do
+            // {
+            //   SERVO_MoveSingleAxisAbsPos(ID_1, 0, Speed_Find_Home);
+            // } while (digitalRead(HOME_SENSOR_J1) == false);
+            // SERVO_MoveStop(ID_1);
+            do
+            {
+                SERVO_MoveVelocity(ID_1, Speed_Find_Home, CCW);
+                if (Theta_Moving <= 75)
+                    Theta_Moving = abs(Theta_Start_Move - GET_THETA_1());
+                else
+                {
+                    SERVO_MoveStop(ID_1);
+                    do
+                    {
+                        SERVO_MoveVelocity(ID_1, Speed_Return_Origin, CW);
+                    } while (digitalRead(HOME_SENSOR_J1) == false);
+                }
+            } while (digitalRead(HOME_SENSOR_J1) == false);
+            SERVO_MoveStop(ID_1);
+            MOVE_ORIGIN_SERVO_1();
+            Theta_Moving = 0;
+        }
+    }
+}
+void Joint_2_Calibration()
+{
+    Write_HMI("t2", "pco", 63488);
+    Write_HMI("t2", "txt", "Calib..");
+    if (digitalRead(HOME_SENSOR_J2) == true)
+    {
+        MOVE_ORIGIN_SERVO_2();
+    }
+    else
+    {
+        long Act_Pos = 0;
+        float Theta_Start_Move = 0;
+        float Theta_Moving = 0;
+        SERVO_GetActualPos(ID_2, &Act_Pos);
+        Serial.printf("Act Pos: %ld\n", Act_Pos);
+        Theta_Start_Move = GET_THETA_2();
+        if (Act_Pos <= 0)
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_2, Speed_Find_Home * 2, CW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_2());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_2);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_2, Speed_Return_Origin * 2, CCW);
+                //   } while (digitalRead(HOME_SENSOR_J2) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J2) == false);
+            SERVO_MoveStop(ID_2);
+            MOVE_ORIGIN_SERVO_2();
+            Theta_Moving = 0;
+        }
+        else
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_2, Speed_Find_Home * 2, CCW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_2());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_2);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_2, Speed_Return_Origin * 2, CW);
+                //   } while (digitalRead(HOME_SENSOR_J2) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J2) == false);
+            SERVO_MoveStop(ID_2);
+            MOVE_ORIGIN_SERVO_2();
+            Theta_Moving = 0;
+        }
+    }
+}
+void Joint_3_Calibration()
+{
+    Write_HMI("t3", "pco", 63488);
+    Write_HMI("t3", "txt", "Calib..");
+    if (digitalRead(HOME_SENSOR_J3) == true)
+    {
+        MOVE_ORIGIN_SERVO_3();
+    }
+    else
+    {
+        long Act_Pos = 0;
+        float Theta_Start_Move = 0;
+        float Theta_Moving = 0;
+        SERVO_GetActualPos(ID_3, &Act_Pos);
+        Serial.printf("Act Pos: %ld\n", Act_Pos);
+        Theta_Start_Move = GET_THETA_3();
+        if (Act_Pos <= 0)
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_3, Speed_Find_Home, CW);
+                // if (Theta_Moving <= 15)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_3());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_3);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_3, Speed_Return_Origin, CCW);
+                //   } while (digitalRead(HOME_SENSOR_J3) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J3) == false);
+            SERVO_MoveStop(ID_3);
+            MOVE_ORIGIN_SERVO_3();
+            Theta_Moving = 0;
+        }
+        else
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_3, Speed_Find_Home, CCW);
+                // if (Theta_Moving <= 15)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_3());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_3);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_3, Speed_Return_Origin, CW);
+                //   } while (digitalRead(HOME_SENSOR_J3) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J3) == false);
+            SERVO_MoveStop(ID_3);
+            MOVE_ORIGIN_SERVO_3();
+            Theta_Moving = 0;
+        }
+    }
+}
+void Joint_4_Calibration()
+{
+    Write_HMI("t4", "pco", 63488);
+    Write_HMI("t4", "txt", "Calib..");
+    if (digitalRead(HOME_SENSOR_J4) == true)
+    {
+        MOVE_ORIGIN_SERVO_4();
+    }
+    else
+    {
+        long Act_Pos = 0;
+        float Theta_Start_Move = 0;
+        float Theta_Moving = 0;
+        SERVO_GetActualPos(ID_4, &Act_Pos);
+        Serial.printf("Act Pos: %ld\n", Act_Pos);
+        Theta_Start_Move = GET_THETA_4();
+        if (Act_Pos <= 0)
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_4, Speed_Find_Home * 2, CW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_4());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_4);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_4, Speed_Return_Origin * 2, CCW);
+                //   } while (digitalRead(HOME_SENSOR_J4) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J4) == false);
+            SERVO_MoveStop(ID_4);
+            MOVE_ORIGIN_SERVO_4();
+            Theta_Moving = 0;
+        }
+        else
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_4, Speed_Find_Home * 2, CCW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_4());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_4);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_4, Speed_Return_Origin * 2, CW);
+                //   } while (digitalRead(HOME_SENSOR_J4) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J4) == false);
+            SERVO_MoveStop(ID_4);
+            MOVE_ORIGIN_SERVO_4();
+            Theta_Moving = 0;
+        }
+    }
+}
+void Joint_5_Calibration()
+{
+    Write_HMI("t5", "pco", 63488);
+    Write_HMI("t5", "txt", "Calib..");
+    if (digitalRead(HOME_SENSOR_J5) == true)
+    {
+        MOVE_ORIGIN_SERVO_5();
+    }
+    else
+    {
+        long Act_Pos = 0;
+        float Theta_Start_Move = 0;
+        float Theta_Moving = 0;
+        SERVO_GetActualPos(ID_5, &Act_Pos);
+        Serial.printf("Act Pos: %ld\n", Act_Pos);
+        Theta_Start_Move = GET_THETA_5();
+        if (Act_Pos <= 0)
+        {
+            // do
+            // {
+            //   SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(-90), Speed_Find_Home);
+            // } while (digitalRead(HOME_SENSOR_J5) == false);
+            // SERVO_MoveStop(ID_5);
+            do
+            {
+                SERVO_MoveVelocity(ID_5, Speed_Find_Home * 2, CW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_5());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_5);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_5, Speed_Return_Origin * 2, CCW);
+                //   } while (digitalRead(HOME_SENSOR_J5) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J5) == false);
+            SERVO_MoveStop(ID_5);
+            MOVE_ORIGIN_SERVO_5();
+            Theta_Moving = 0;
+        }
+        else
+        {
+            // do
+            // {
+            //   SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(-90), Speed_Find_Home);
+            // } while (digitalRead(HOME_SENSOR_J5) == false);
+            // SERVO_MoveStop(ID_5);
+            do
+            {
+                SERVO_MoveVelocity(ID_5, Speed_Find_Home * 2, CCW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_5());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_5);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_5, Speed_Return_Origin * 2, CW);
+                //   } while (digitalRead(HOME_SENSOR_J5) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J5) == false);
+            SERVO_MoveStop(ID_5);
+            MOVE_ORIGIN_SERVO_5();
+            Theta_Moving = 0;
+        }
+    }
+}
+void Joint_6_Calibration()
+{
+    Write_HMI("t6", "pco", 63488);
+    Write_HMI("t6", "txt", "Calib..");
+    if (digitalRead(HOME_SENSOR_J6) == true)
+    {
+        MOVE_ORIGIN_SERVO_6();
+    }
+    else
+    {
+        long Act_Pos = 0;
+        float Theta_Start_Move = 0;
+        float Theta_Moving = 0;
+        SERVO_GetActualPos(ID_6, &Act_Pos);
+        Serial.printf("Act Pos: %ld\n", Act_Pos);
+        Theta_Start_Move = GET_THETA_6();
+        if (Act_Pos <= 0)
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_6, Speed_Find_Home, CW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_6());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_6);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_6, Speed_Return_Origin, CCW);
+                //   } while (digitalRead(HOME_SENSOR_J6) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J6) == false);
+            SERVO_MoveStop(ID_6);
+            MOVE_ORIGIN_SERVO_6();
+            Theta_Moving = 0;
+        }
+        else
+        {
+            do
+            {
+                SERVO_MoveVelocity(ID_6, Speed_Find_Home, CCW);
+                // if (Theta_Moving <= 30)
+                //   Theta_Moving = abs(Theta_Start_Move - GET_THETA_6());
+                // else
+                // {
+                //   SERVO_MoveStop(ID_6);
+                //   do
+                //   {
+                //     SERVO_MoveVelocity(ID_6, Speed_Return_Origin, CW);
+                //   } while (digitalRead(HOME_SENSOR_J6) == false);
+                // }
+            } while (digitalRead(HOME_SENSOR_J6) == false);
+            SERVO_MoveStop(ID_6);
+            MOVE_ORIGIN_SERVO_6();
+            Theta_Moving = 0;
+        }
+    }
+}
+void Robot_Calibration()
+{
+    Joint_1_Calibration();
+    Joint_2_Calibration();
+    Joint_3_Calibration();
+    Joint_4_Calibration();
+    Joint_5_Calibration();
+    Joint_6_Calibration();
+
+    Write_HMI("t1", "pco", 65535);
+    Write_HMI("t2", "pco", 65535);
+    Write_HMI("t3", "pco", 65535);
+    Write_HMI("t4", "pco", 65535);
+    Write_HMI("t5", "pco", 65535);
+    Write_HMI("t6", "pco", 65535);
+    clearBufferData();
+}
+void Update_Home_Sensor_State()
+{
+    Write_HMI("j1h", "bco", digitalRead(HOME_SENSOR_J1) ? 2016 : 8518);
+    Write_HMI("j2h", "bco", digitalRead(HOME_SENSOR_J2) ? 2016 : 8518);
+    Write_HMI("j3h", "bco", digitalRead(HOME_SENSOR_J3) ? 2016 : 8518);
+    Write_HMI("j4h", "bco", digitalRead(HOME_SENSOR_J4) ? 2016 : 8518);
+    Write_HMI("j5h", "bco", digitalRead(HOME_SENSOR_J5) ? 2016 : 8518);
+    Write_HMI("j6h", "bco", digitalRead(HOME_SENSOR_J6) ? 2016 : 8518);
+}
+void Update_Data_HMI()
+{
+    Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+    Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+    Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+    Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+    Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+    Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+
+    Write_HMI("x", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(0, 3).value() * 10) / 10, 1));
+    Write_HMI("y", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(1, 3).value() * 10) / 10, 1));
+    Write_HMI("z", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(2, 3).value() * 10) / 10, 1));
+
+    Write_HMI("r11", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 0).value(), 2));
+    Write_HMI("r12", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 1).value(), 2));
+    Write_HMI("r13", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 2).value(), 2));
+
+    Write_HMI("r21", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 0).value(), 2));
+    Write_HMI("r22", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 1).value(), 2));
+    Write_HMI("r23", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 2).value(), 2));
+
+    Write_HMI("r31", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 0).value(), 2));
+    Write_HMI("r32", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 1).value(), 2));
+    Write_HMI("r33", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 2).value(), 2));
+
+    Write_HMI("s1", "txt", roundFloatToString(GET_SPEED_1(), 2));
+    Write_HMI("s2", "txt", roundFloatToString(GET_SPEED_2(), 2));
+    Write_HMI("s3", "txt", roundFloatToString(GET_SPEED_3(), 2));
+    Write_HMI("s4", "txt", roundFloatToString(GET_SPEED_4(), 2));
+    Write_HMI("s5", "txt", roundFloatToString(GET_SPEED_5(), 2));
+    Write_HMI("s6", "txt", roundFloatToString(GET_SPEED_6(), 2));
+
+    Update_Home_Sensor_State();
+    Write_HMI("out1", "pco", digitalRead(RELAY_5) ? 2016 : 63488);
+    Write_HMI("out1", "txt", String((digitalRead(RELAY_5) ? "ON" : "OFF")));
+    Write_HMI("out2", "pco", digitalRead(RELAY_6) ? 2016 : 63488);
+    Write_HMI("out2", "txt", String((digitalRead(RELAY_6) ? "ON" : "OFF")));
+
+    long acc_value = 0;
+    long dec_value = 0;
+    SERVO_GetParameter(ID_4, ACCELERATION_TIME_PARAMETER, &acc_value);
+    SERVO_GetParameter(ID_4, DECELERATION_TIME_PARAMETER, &dec_value);
+    Write_HMI("acc", "txt", String(acc_value));
+    Write_HMI("dec", "txt", String(dec_value));
+}
+void Home_Page()
+{
+    Read_HMI();
+    bool WAKEUP_REQUEST = false;
+    unsigned int WAKEUP_No = 0;
+    Update_System_Status();
+    Update_Out_Relay_Status();
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("ON") != NULL_POS)
+    {
+        if (SYSTEM_STATUS == false)
+        {
+            SYSTEM_STATUS = true;
+            Update_System_Status();
+            ENABLE_ALL_SERVO();
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("OFF") != NULL_POS)
+    {
+        if (SYSTEM_STATUS == true)
+        {
+            SYSTEM_STATUS = false;
+            Update_System_Status();
+            DISABLE_ALL_SERVO();
+            String LAST_THETA =
+                "LAST_THETA;" + String(GET_THETA_1()) + ";" + String(GET_THETA_2()) + ";" + String(GET_THETA_3()) +
+                ";" + String(GET_THETA_4()) + ";" + String(GET_THETA_5()) + ";" + String(GET_THETA_6()) + ";";
+            Serial.printf("WRITE LAST THETA: %s\n", LAST_THETA.c_str());
+            bool writeFileStatus = writeFile(SD, "/LAST_THETA.txt", LAST_THETA.c_str());
+            if (writeFileStatus == true)
+                Alarm_HMI("All Servo OFF!");
+            else
+                Alarm_HMI("OFF Failed!");
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("RST") != NULL_POS)
+    {
+        RESET_ALL_ALARM();
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("ACC") != NULL_POS)
+    {
+        ACCEL_TIME = splitString(HMI_BUFFER_DATA, ";", 1).toInt();
+        Serial.printf("ACC TIME = %d \n", ACCEL_TIME);
+        SET_ALL_ACCELERATION_TIME(ACCEL_TIME);
+        Alarm_HMI("Accel [" + String(ACCEL_TIME) + "] is set!");
+        SAVE_ALL_PARAMETER();
+        Alarm_HMI("Saved all parameter!");
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("DEC") != NULL_POS)
+    {
+        DECEL_TIME = splitString(HMI_BUFFER_DATA, ";", 1).toInt();
+        Serial.printf("DEC TIME = %d \n", DECEL_TIME);
+        SET_ALL_DECELERATION_TIME(DECEL_TIME);
+        Alarm_HMI("Decel [" + String(DECEL_TIME) + "] is set!");
+        SAVE_ALL_PARAMETER();
+        Alarm_HMI("Saved all parameter!");
+        clearBufferData();
+    }
+    Read_HMI();
+    if (SYSTEM_STATUS == true)
+    {
+        Serial.println("check fixed");
+        if (HMI_BUFFER_DATA.indexOf("HOME") != NULL_POS)
+        {
+            Move_Robot_Fixed_Modes(Fixed_Modes.Home, 3);
+        }
+        else if (HMI_BUFFER_DATA.indexOf("WAKEUP") != NULL_POS)
+        {
+            Move_Robot_Fixed_Modes(Fixed_Modes.Wakeup, 3);
+        }
+        else if (HMI_BUFFER_DATA.indexOf("SLP") != NULL_POS)
+        {
+            Move_Robot_Fixed_Modes(Fixed_Modes.Sleep, 3);
+        }
+        else if (HMI_BUFFER_DATA.indexOf("CALIB") != NULL_POS)
+        {
+            Write_HMI("t1", "txt", "-----");
+            Write_HMI("t2", "txt", "-----");
+            Write_HMI("t3", "txt", "-----");
+            Write_HMI("t4", "txt", "-----");
+            Write_HMI("t5", "txt", "-----");
+            Write_HMI("t6", "txt", "-----");
+            Write_HMI("x", "txt", "---");
+            Write_HMI("y", "txt", "---");
+            Write_HMI("z", "txt", "---");
+
+            Write_HMI("r11", "txt", "---");
+            Write_HMI("r12", "txt", "---");
+            Write_HMI("r13", "txt", "---");
+
+            Write_HMI("r21", "txt", "---");
+            Write_HMI("r22", "txt", "---");
+            Write_HMI("r23", "txt", "---");
+
+            Write_HMI("r31", "txt", "---");
+            Write_HMI("r32", "txt", "---");
+            Write_HMI("r33", "txt", "---");
+
+            Write_HMI("s1", "txt", "-------");
+            Write_HMI("s2", "txt", "-------");
+            Write_HMI("s3", "txt", "-------");
+            Write_HMI("s4", "txt", "-------");
+            Write_HMI("s5", "txt", "-------");
+            Write_HMI("s6", "txt", "-------");
+            Robot_Calibration();
+        }
+    }
+    // while (WAKEUP_REQUEST == true)
+    // {
+    //   if (WAKEUP_No == 0 && theta1_old == 0 && digitalRead(HOME_SENSOR_J1) == true)
+    //   {
+    //     SERVO_MoveSingleAxisIncPos(ID_1, DEG_TO_POS_1_CONV(10), 25000);
+    //     delay(3000);
+    //     WAKEUP_No = 1;
+    //   }
+    //   while (WAKEUP_No == 1)
+    //   {
+    //     SERVO_MoveVelocity(ID_1, 15000, 0);
+    //     if (digitalRead(HOME_SENSOR_J1) == true)
+    //     {
+    //       SERVO_MoveStop(ID_1);
+    //       delayMicroseconds(1500);
+    //       SERVO_MoveSingleAxisIncPos(ID_1, DEG_TO_POS_1_CONV(-10), 10000);
+    //       delay(3000);
+    //       WAKEUP_No = 2;
+    //     }
+    //   }
+    // }
+    Update_Data_HMI();
+}
+void Update_Encoder_State()
+{
+    newPosition = Teach_Pendant_Encoder.getCount();
+    Encoder_Position_Diff = newPosition - lastPosition;
+
+    // if (newPosition > lastPosition)
+    // {
+    //   Serial.print("CW  : ");
+    //   Serial.println(newPosition);
+    // }
+    // else if (newPosition < lastPosition)
+    // {
+    //   Serial.print("CCW : ");
+    //   Serial.println(newPosition);
+    // }
+
+    switch (Speed_Selection_Mode)
+    {
+    case 1:
+        Encoder_Pulse_Resolution = Encoder_Position_Diff * 0.5;
+        Axis_Resolution = Encoder_Position_Diff * 1;
+        break;
+    case 2:
+        Encoder_Pulse_Resolution = Encoder_Position_Diff * 1;
+        Axis_Resolution = Encoder_Position_Diff * 10;
+        break;
+    case 3:
+        Encoder_Pulse_Resolution = Encoder_Position_Diff * 5;
+        Axis_Resolution = Encoder_Position_Diff * 50;
+        break;
+    default:
+        Encoder_Pulse_Resolution = Encoder_Position_Diff * 0.5;
+        Axis_Resolution = Encoder_Position_Diff * 5;
+        break;
+    }
+    // Serial.print("LastPosition : ");
+    // Serial.print(newPosition);
+    // Serial.print(" , lastPosition : ");
+    // Serial.print(lastPosition);
+    // Serial.print(" , Diff: ");
+    // Serial.print(Encoder_Position_Diff);
+    // Serial.print(" , Encoder_Pulse_Resolution: ");
+    // Serial.println(Encoder_Pulse_Resolution);
+}
+void Update_Speed_Selection()
+{
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("SX1\r") != NULL_POS)
+    {
+        Speed_Selection_Mode = 1;
+        Alarm_HMI("Speed x1 is set!");
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("SX10\r") != NULL_POS)
+    {
+        Speed_Selection_Mode = 2;
+        Alarm_HMI("Speed x10 is set!");
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("SX100\r") != NULL_POS)
+    {
+        Speed_Selection_Mode = 3;
+        Alarm_HMI("Speed x100 is set!");
+        clearBufferData();
+    }
+}
+void Update_Slider_State()
+{
+    unsigned int Move_Speed;
+    Update_Speed_Selection();
+    switch (Speed_Selection_Mode)
+    {
+    case 1:
+        Move_Speed = 5000;
+        break;
+    case 2:
+        Move_Speed = 10000;
+        break;
+    case 3:
+        Move_Speed = 20000;
+        break;
+    default:
+        Move_Speed = 5000;
+        break;
+    }
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("SL1") != NULL_POS)
+    {
+        slider1_target = (float)map(splitString(HMI_BUFFER_DATA, ";", 1).toFloat(), 0, 180, -90, 90);
+        Serial.printf("Slider1 target: %f\n", slider1_target);
+        Write_HMI("t1", "txt", roundFloatToString(slider1_target, 1));
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SL2") != NULL_POS)
+    {
+        slider2_target = (float)map(splitString(HMI_BUFFER_DATA, ";", 1).toFloat(), 0, 135, 0, 135);
+        Serial.printf("Slider2 target: %f\n", slider2_target);
+        Write_HMI("t2", "txt", roundFloatToString(slider2_target, 1));
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SL3") != NULL_POS)
+    {
+        slider3_target = (float)map(splitString(HMI_BUFFER_DATA, ";", 1).toFloat(), 0, 90, -45, 45);
+        Serial.printf("Slider3 target: %f\n", slider3_target);
+        Write_HMI("t3", "txt", roundFloatToString(slider3_target, 1));
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SL4") != NULL_POS)
+    {
+        slider4_target = (float)map(splitString(HMI_BUFFER_DATA, ";", 1).toFloat(), 0, 180, -90, 90);
+        Serial.printf("Slider4 target: %f\n", slider4_target);
+        Write_HMI("t4", "txt", roundFloatToString(slider4_target, 1));
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SL5") != NULL_POS)
+    {
+        slider5_target = (float)map(splitString(HMI_BUFFER_DATA, ";", 1).toFloat(), 0, 250, -125, 125);
+        Serial.printf("Slider5 target: %f\n", slider5_target);
+        Write_HMI("t5", "txt", roundFloatToString(slider5_target, 1));
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SL6") != NULL_POS)
+    {
+        slider6_target = (float)map(splitString(HMI_BUFFER_DATA, ";", 1).toFloat(), 0, 360, -180, 180);
+        Serial.printf("Slider6 target: %f\n", slider6_target);
+        Write_HMI("t6", "txt", roundFloatToString(slider6_target, 1));
+        clearBufferData();
+    }
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("SLS1") != NULL_POS)
+    {
+        float slider1_target_temp = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        if (slider1_target_temp >= -90 && slider1_target_temp <= 90)
+        {
+            slider1_target = slider1_target_temp;
+            Serial.printf("Slider1 target: %f\n", slider1_target);
+            Write_HMI("t1", "txt", roundFloatToString(slider1_target, 1));
+            Write_HMI("st1", "val", (unsigned int)map(slider1_target, -90, 90, 0, 180));
+            SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_POS_1_CONV(roundToNearestHalfDeg(slider1_target)), Move_Speed);
+        }
+        else
+        {
+            Write_HMI("t1", "txt", "OOR");
+            delay(500);
+            Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+        }
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SLS2") != NULL_POS)
+    {
+        float slider2_target_temp = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        if (slider2_target_temp >= 0 && slider2_target_temp <= 135)
+        {
+            slider2_target = slider2_target_temp;
+            Serial.printf("Slider2 target: %f\n", slider2_target);
+            Write_HMI("t2", "txt", roundFloatToString(slider2_target, 1));
+            SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_POS_2_CONV(roundToNearestHalfDeg(slider2_target - THETA2_OFFSET)), Move_Speed);
+        }
+        else
+        {
+            Write_HMI("t2", "txt", "OOR");
+            delay(500);
+            Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+        }
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SLS3") != NULL_POS)
+    {
+        float slider3_target_temp = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        if (slider3_target_temp >= -45 && slider3_target_temp <= 45)
+        {
+            slider3_target = slider3_target_temp;
+            Serial.printf("Slider3 target: %f\n", slider3_target);
+            Write_HMI("t3", "txt", roundFloatToString(slider3_target, 1));
+            SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_POS_3_CONV(roundToNearestHalfDeg(slider3_target)), Move_Speed);
+        }
+        else
+        {
+            Write_HMI("t3", "txt", "OOR");
+            delay(500);
+            Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+        }
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SLS4") != NULL_POS)
+    {
+        float slider4_target_temp = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        if (slider4_target_temp >= -90 && slider4_target_temp <= 90)
+        {
+            slider4_target = slider4_target_temp;
+            Serial.printf("Slider4 target: %f\n", slider4_target);
+            Write_HMI("t4", "txt", roundFloatToString(slider4_target, 1));
+            SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(roundToNearestHalfDeg(slider4_target)), Move_Speed);
+        }
+        else
+        {
+            Write_HMI("t4", "txt", "OOR");
+            delay(500);
+            Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+        }
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SLS5") != NULL_POS)
+    {
+        float slider5_target_temp = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        if (slider5_target_temp >= -125 && slider5_target_temp <= 125)
+        {
+            slider5_target = slider5_target_temp;
+            Serial.printf("Slider5 target: %f\n", slider5_target);
+            Write_HMI("t5", "txt", roundFloatToString(slider5_target, 1));
+            SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(roundToNearestHalfDeg(slider5_target)), Move_Speed * 5);
+        }
+        else
+        {
+            Write_HMI("t5", "txt", "OOR");
+            delay(500);
+            Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+        }
+        clearBufferData();
+    }
+    if (HMI_BUFFER_DATA.indexOf("SLS6") != NULL_POS)
+    {
+        float slider6_target_temp = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        if (slider6_target_temp >= -180 && slider6_target_temp <= 180)
+        {
+            slider6_target = slider6_target_temp;
+            Serial.printf("Slider6 target: %f\n", slider6_target);
+            Write_HMI("t6", "txt", roundFloatToString(slider6_target, 1));
+            SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(roundToNearestHalfDeg(slider6_target)), Move_Speed);
+        }
+        else
+        {
+            Write_HMI("t6", "txt", "OOR");
+            delay(500);
+            Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+        }
+        clearBufferData();
+    }
+
+    SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_POS_1_CONV(roundToNearestHalfDeg(slider1_target)), Move_Speed);
+    SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_POS_2_CONV(roundToNearestHalfDeg(slider2_target - THETA2_OFFSET)), Move_Speed);
+    SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_POS_3_CONV(roundToNearestHalfDeg(slider3_target)), Move_Speed);
+    SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(roundToNearestHalfDeg(slider4_target)), Move_Speed);
+    SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(roundToNearestHalfDeg(slider5_target)), Move_Speed * 5);
+    SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(roundToNearestHalfDeg(slider6_target)), Move_Speed);
+    // Write_HMI("st2", "val", (unsigned int)map(GET_THETA_2() + THETA2_OFFSET, 0, 135, 0, 135));
+    // Write_HMI("st3", "val", (unsigned int)map(GET_THETA_3(), -45, 45, 0, 90));
+    // Write_HMI("st4", "val", (unsigned int)map(GET_THETA_4(), -90, 90, 0, 180));
+    // Write_HMI("st5", "val", (unsigned int)map(GET_THETA_5(), -125, 125, 0, 250));
+    // Write_HMI("st6", "val", (unsigned int)map(GET_THETA_6(), -180, 180, 0, 360));
+
+    // Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+    // Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+    // Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+    // Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+    // Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+    // Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+}
+void Check_And_Run_Robot_IK_ENC()
+{
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("SIK") != NULL_POS)
+    {
+        EEx_Target = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        EEy_Target = splitString(HMI_BUFFER_DATA, ";", 2).toFloat();
+        EEz_Target = splitString(HMI_BUFFER_DATA, ";", 3).toFloat();
+        if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE1")
+        {
+            R_0_6_Temp << 1, 0, 0,
+                0, -1, 0,
+                0, 0, -1;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE2")
+        {
+            R_0_6_Temp << 0, 0, 1,
+                0, -1, 0,
+                1, 0, 0;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE3")
+        {
+            R_0_6_Temp << 1, 0, 0,
+                0, 0, 1,
+                0, -1, 0;
+            FIND_NEAREST_SOLUTION = true;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE4")
+        {
+            R_0_6_Temp << -1, 0, 0,
+                0, 0, -1,
+                0, -1, 0;
+            FIND_NEAREST_SOLUTION = true;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EEC")
+        {
+        }
+        Run_Time_Target = splitString(HMI_BUFFER_DATA, ";", 5).toInt();
+        Serial.printf("EEx_Target: %f, EEy_Target: %f, EEz_Target: %f, EE Selected: %s, Time Target: %d\n",
+                      EEx_Target, EEy_Target, EEz_Target, splitString(HMI_BUFFER_DATA, ";", 4), Run_Time_Target);
+        EE_Target_Matrix << EEx_Target, EEy_Target, EEz_Target;
+        long newtime = 0;
+        long lastime = 0;
+        newtime = millis();
+        IK_Result = Inverse_Kinematics(EE_Target_Matrix, R_0_6_Temp);
+        lastime = millis() - newtime;
+        Serial.printf("Time for solve IK: %ld\n", lastime);
+        Serial.printf("IK_Result: %s\n", IK_Result.c_str());
+        if (IK_Result.indexOf("OK") != NULL_POS)
+        {
+            Theta1_IK_READY = splitString(IK_Result, ";", 1).toFloat();
+            Theta2_IK_READY = splitString(IK_Result, ";", 2).toFloat();
+            Theta3_IK_READY = splitString(IK_Result, ";", 3).toFloat();
+            Theta4_IK_READY = splitString(IK_Result, ";", 4).toFloat();
+            Theta5_IK_READY = splitString(IK_Result, ";", 5).toFloat();
+            Theta6_IK_READY = splitString(IK_Result, ";", 6).toFloat();
+
+            Write_HMI("t1ik", "txt", roundFloatToString(Theta1_IK_READY, 1));
+            Write_HMI("t2ik", "txt", roundFloatToString(Theta2_IK_READY, 1));
+            Write_HMI("t3ik", "txt", roundFloatToString(Theta3_IK_READY, 1));
+            Write_HMI("t4ik", "txt", roundFloatToString(Theta4_IK_READY, 1));
+            Write_HMI("t5ik", "txt", roundFloatToString(Theta5_IK_READY, 1));
+            Write_HMI("t6ik", "txt", roundFloatToString(Theta6_IK_READY, 1));
+
+            theta1_old = GET_THETA_1();
+            theta2_old = GET_THETA_2() + THETA2_OFFSET;
+            theta3_old = GET_THETA_3();
+            theta4_old = GET_THETA_4();
+            theta5_old = GET_THETA_5();
+            theta6_old = GET_THETA_6();
+
+            Speed_1 = SPEED_SERVO_1(Theta1_IK_READY, theta1_old, Run_Time_Target);
+            Speed_2 = SPEED_SERVO_2(Theta2_IK_READY - 90, theta2_old - 90, Run_Time_Target);
+            Speed_3 = SPEED_SERVO_3(Theta3_IK_READY, theta3_old, Run_Time_Target);
+            Speed_4 = SPEED_SERVO_4(Theta4_IK_READY, theta4_old, Run_Time_Target);
+            Speed_5 = SPEED_SERVO_5(Theta5_IK_READY, theta5_old, Run_Time_Target);
+            Speed_6 = SPEED_SERVO_6(Theta6_IK_READY, theta6_old, Run_Time_Target);
+
+            Serial.printf("THETA READY: T1: %f, T2: %f, T3: %f, T4: %f, T5: %f, T6: %f\n",
+                          Theta1_IK_READY, Theta2_IK_READY, Theta3_IK_READY, Theta4_IK_READY, Theta5_IK_READY, Theta6_IK_READY);
+            Serial.printf("SPEED READY: S1: %d, S2: %d, S3: %d, S4: %d, S5: %d, S6: %d\n",
+                          Speed_1, Speed_2, Speed_3, Speed_4, Speed_5, Speed_6);
+            Serial.printf("TIME READY: %d\n", Run_Time_Target);
+
+            EN_READY = true;
+        }
+        clearBufferData();
+    }
+    Read_HMI();
+    if ((HMI_BUFFER_DATA.indexOf("RUN") != NULL_POS || digitalRead(GREEN_BUTTON) == 0) && EN_READY == true)
+    {
+        SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_POS_1_CONV(Theta1_IK_READY), Speed_1);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_POS_2_CONV(Theta2_IK_READY - 90), Speed_2);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_POS_3_CONV(Theta3_IK_READY), Speed_3);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(Theta4_IK_READY), Speed_4);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(Theta5_IK_READY), Speed_5);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(Theta6_IK_READY), Speed_6);
+        delayMicroseconds(1500);
+
+        Serial.println("DONE TASK!");
+        Serial.printf("THETA UPDATE: T1: %f, T2: %f, T3: %f, T4: %f, T5: %f, T6: %f\n",
+                      GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+        EN_READY = false;
+        DONE_ALM = true;
+    }
+    if ((HMI_BUFFER_DATA.indexOf("STOP") != NULL_POS || digitalRead(RED_BUTTON) == 0))
+    {
+        SERVO_AllMoveStop();
+        Serial.println("STOP TASK!");
+        EN_READY = true;
+    }
+}
+void Check_And_Run_Robot_IK_SLI()
+{
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("SIK") != NULL_POS)
+    {
+        EEx_Target = splitString(HMI_BUFFER_DATA, ";", 1).toFloat();
+        EEy_Target = splitString(HMI_BUFFER_DATA, ";", 2).toFloat();
+        EEz_Target = splitString(HMI_BUFFER_DATA, ";", 3).toFloat();
+        if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE1")
+        {
+            R_0_6_Temp << 1, 0, 0,
+                0, -1, 0,
+                0, 0, -1;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE2")
+        {
+            R_0_6_Temp << 0, 0, 1,
+                0, -1, 0,
+                1, 0, 0;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE3")
+        {
+            R_0_6_Temp << 1, 0, 0,
+                0, 0, 1,
+                0, -1, 0;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EE4")
+        {
+            R_0_6_Temp << -1, 0, 0,
+                0, 0, -1,
+                0, -1, 0;
+        }
+        else if (splitString(HMI_BUFFER_DATA, ";", 4) == "EEC")
+        {
+        }
+        Run_Time_Target = splitString(HMI_BUFFER_DATA, ";", 5).toInt();
+        Serial.printf("EEx_Target: %f, EEy_Target: %f, EEz_Target: %f, EE Selected: %s, Time Target: %d\n",
+                      EEx_Target, EEy_Target, EEz_Target, splitString(HMI_BUFFER_DATA, ";", 4), Run_Time_Target);
+        EE_Target_Matrix << EEx_Target, EEy_Target, EEz_Target;
+        long newtime = 0;
+        long lastime = 0;
+        newtime = millis();
+        IK_Result = Inverse_Kinematics_No_Debug(EE_Target_Matrix, R_0_6_Temp);
+        lastime = millis() - newtime;
+        Serial.printf("Time for solve IK: %ld\n", lastime);
+        Serial.printf("IK_Result: %s\n", IK_Result.c_str());
+        if (IK_Result.indexOf("OK") != NULL_POS)
+        {
+            Theta1_IK_READY = splitString(IK_Result, ";", 1).toFloat();
+            Theta2_IK_READY = splitString(IK_Result, ";", 2).toFloat();
+            Theta3_IK_READY = splitString(IK_Result, ";", 3).toFloat();
+            Theta4_IK_READY = splitString(IK_Result, ";", 4).toFloat();
+            Theta5_IK_READY = splitString(IK_Result, ";", 5).toFloat();
+            Theta6_IK_READY = splitString(IK_Result, ";", 6).toFloat();
+
+            Write_HMI("t1ik", "txt", roundFloatToString(Theta1_IK_READY, 1));
+            Write_HMI("t2ik", "txt", roundFloatToString(Theta2_IK_READY, 1));
+            Write_HMI("t3ik", "txt", roundFloatToString(Theta3_IK_READY, 1));
+            Write_HMI("t4ik", "txt", roundFloatToString(Theta4_IK_READY, 1));
+            Write_HMI("t5ik", "txt", roundFloatToString(Theta5_IK_READY, 1));
+            Write_HMI("t6ik", "txt", roundFloatToString(Theta6_IK_READY, 1));
+
+            theta1_old = GET_THETA_1();
+            theta2_old = GET_THETA_2() + THETA2_OFFSET;
+            theta3_old = GET_THETA_3();
+            theta4_old = GET_THETA_4();
+            theta5_old = GET_THETA_5();
+            theta6_old = GET_THETA_6();
+
+            Speed_1 = SPEED_SERVO_1(Theta1_IK_READY, theta1_old, Run_Time_Target);
+            Speed_2 = SPEED_SERVO_2(Theta2_IK_READY - 90, theta2_old - 90, Run_Time_Target);
+            Speed_3 = SPEED_SERVO_3(Theta3_IK_READY, theta3_old, Run_Time_Target);
+            Speed_4 = SPEED_SERVO_4(Theta4_IK_READY, theta4_old, Run_Time_Target);
+            Speed_5 = SPEED_SERVO_5(Theta5_IK_READY, theta5_old, Run_Time_Target);
+            Speed_6 = SPEED_SERVO_6(Theta6_IK_READY, theta6_old, Run_Time_Target);
+
+            Serial.printf("THETA READY: T1: %f, T2: %f, T3: %f, T4: %f, T5: %f, T6: %f\n",
+                          Theta1_IK_READY, Theta2_IK_READY, Theta3_IK_READY, Theta4_IK_READY, Theta5_IK_READY, Theta6_IK_READY);
+            Serial.printf("SPEED READY: S1: %d, S2: %d, S3: %d, S4: %d, S5: %d, S6: %d\n",
+                          Speed_1, Speed_2, Speed_3, Speed_4, Speed_5, Speed_6);
+            Serial.printf("TIME READY: %d\n", Run_Time_Target);
+
+            EN_READY = true;
+            bool EXIT1 = false, EXIT2 = false, EXIT3 = false;
+            do
+            {
+                Read_HMI();
+                if ((HMI_BUFFER_DATA.indexOf("RUN") != NULL_POS || digitalRead(GREEN_BUTTON) == 0) && EN_READY == true)
+                {
+                    SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_POS_1_CONV(Theta1_IK_READY), Speed_1);
+                    delayMicroseconds(1500);
+                    SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_POS_2_CONV(Theta2_IK_READY - 90), Speed_2);
+                    delayMicroseconds(1500);
+                    SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_POS_3_CONV(Theta3_IK_READY), Speed_3);
+                    delayMicroseconds(1500);
+                    SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(Theta4_IK_READY), Speed_4);
+                    delayMicroseconds(1500);
+                    SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(Theta5_IK_READY), Speed_5);
+                    delayMicroseconds(1500);
+                    SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(Theta6_IK_READY), Speed_6);
+                    delayMicroseconds(1500);
+
+                    Serial.println("DONE TASK!");
+                    Serial.printf("THETA UPDATE: T1: %f, T2: %f, T3: %f, T4: %f, T5: %f, T6: %f\n",
+                                  GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+                    EN_READY = false;
+                    DONE_ALM = true;
+                }
+                if ((HMI_BUFFER_DATA.indexOf("STOP") != NULL_POS || digitalRead(RED_BUTTON) == 0))
+                {
+                    SERVO_AllMoveStop();
+                    Serial.println("STOP TASK!");
+                    EN_READY = true;
+                }
+                Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+                Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+                Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+                Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+                Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+                Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+                FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+                Write_HMI("xfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(0, 3).value() * 10) / 10, 1));
+                Write_HMI("yfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(1, 3).value() * 10) / 10, 1));
+                Write_HMI("zfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(2, 3).value() * 10) / 10, 1));
+
+                EXIT1 = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+                EXIT2 = round(GET_THETA_1()) == round(Theta1_IK_READY) && round(GET_THETA_2() + THETA2_OFFSET) == round(Theta2_IK_READY) && round(GET_THETA_3()) == round(Theta3_IK_READY);
+                EXIT3 = round(GET_THETA_4()) == round(Theta4_IK_READY) && round(GET_THETA_5()) == round(Theta5_IK_READY) && round(GET_THETA_6()) == round(Theta6_IK_READY);
+
+                Write_HMI("st1", "val", (unsigned int)map(GET_THETA_1(), -90, 90, 0, 180));
+                Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+                slider1_target = GET_THETA_1();
+                Write_HMI("st2", "val", (unsigned int)map(GET_THETA_2() + THETA2_OFFSET, 0, 135, 0, 135));
+                Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+                slider2_target = GET_THETA_2() + THETA2_OFFSET;
+                Write_HMI("st3", "val", (unsigned int)map(GET_THETA_3(), -45, 45, 0, 90));
+                Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+                slider3_target = GET_THETA_3();
+                Write_HMI("st4", "val", (unsigned int)map(GET_THETA_4(), -90, 90, 0, 180));
+                Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+                slider4_target = GET_THETA_4();
+                Write_HMI("st5", "val", (unsigned int)map(GET_THETA_5(), -125, 125, 0, 250));
+                Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+                slider5_target = GET_THETA_5();
+                Write_HMI("st6", "val", (unsigned int)map(GET_THETA_6(), -180, 180, 0, 360));
+                Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+                slider6_target = GET_THETA_6();
+            } while (!(EXIT1 && EXIT2 && EXIT3));
+        }
+        clearBufferData();
+    }
+}
+void Kinematic_Slider_Mode_Page()
+{
+    Read_HMI();
+    Update_Speed_Selection();
+    Update_Out_Relay_Status();
+    clearBufferData();
+    Update_Slider_State();
+    // Serial.printf("ST1: %ld\n", map(GET_THETA_1(), -180, 180, 0, 360));
+    // Serial.printf("ST2: %ld\n", map(GET_THETA_2() + THETA2_OFFSET, 0, 135, 0, 135));
+    // Serial.printf("ST3: %ld\n", map(GET_THETA_3(), -45, 45, 0, 90));
+    // Serial.printf("ST4: %ld\n", map(GET_THETA_4(), -90, 90, 0, 180));
+    // Serial.printf("ST5: %ld\n", map(GET_THETA_5(), -125, 125, 0, 250));
+    // Serial.printf("ST6: %ld\n", map(GET_THETA_6(), -180, 180, 0, 360));
+
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+
+    Write_HMI("xfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(0, 3).value() * 10) / 10, 1));
+    Write_HMI("yfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(1, 3).value() * 10) / 10, 1));
+    Write_HMI("zfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(2, 3).value() * 10) / 10, 1));
+    Update_Slider_State();
+    Update_Speed_Selection();
+    Update_Slider_State();
+    Check_And_Run_Robot_IK_SLI();
+}
+void Kinematic_Encoder_Mode_Page()
+{
+    Read_HMI();
+    Update_Speed_Selection();
+    Update_Encoder_State();
+    Update_Out_Relay_Status();
+
+    if (HMI_BUFFER_DATA.indexOf("ST1") != NULL_POS)
+        Theta_Selection = "ST1";
+    else if (HMI_BUFFER_DATA.indexOf("ST2") != NULL_POS)
+        Theta_Selection = "ST2";
+    else if (HMI_BUFFER_DATA.indexOf("ST3") != NULL_POS)
+        Theta_Selection = "ST3";
+    else if (HMI_BUFFER_DATA.indexOf("ST4") != NULL_POS)
+        Theta_Selection = "ST4";
+    else if (HMI_BUFFER_DATA.indexOf("ST5") != NULL_POS)
+        Theta_Selection = "ST5";
+    else if (HMI_BUFFER_DATA.indexOf("ST6") != NULL_POS)
+        Theta_Selection = "ST6";
+
+    clearBufferData();
+    Update_Encoder_State();
+    Read_HMI();
+    if (Encoder_Pulse_Resolution != 0)
+    {
+        if (Theta_Selection == "ST1")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_POS_1_CONV(roundToNearestHalfDeg(GET_THETA_1() + Encoder_Pulse_Resolution)), 50000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1()));
+        }
+        else if (Theta_Selection == "ST2")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_POS_2_CONV(roundToNearestHalfDeg(GET_THETA_2() + Encoder_Pulse_Resolution)), 50000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2()));
+        }
+        else if (Theta_Selection == "ST3")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_POS_3_CONV(roundToNearestHalfDeg(GET_THETA_3() + Encoder_Pulse_Resolution)), 50000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3()));
+        }
+        else if (Theta_Selection == "ST4")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(roundToNearestHalfDeg(GET_THETA_4() + Encoder_Pulse_Resolution)), 100000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4()));
+        }
+        else if (Theta_Selection == "ST5")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(roundToNearestHalfDeg(GET_THETA_5() + Encoder_Pulse_Resolution)), 100000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5()));
+        }
+        else if (Theta_Selection == "ST6")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(roundToNearestHalfDeg(GET_THETA_6() + Encoder_Pulse_Resolution)), 50000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6()));
+        }
+        else
+            lastPosition = Teach_Pendant_Encoder.getCount();
+    }
+
+    Update_Encoder_State();
+    Write_HMI("t1", "txt", roundFloatToString(GET_THETA_1(), 1));
+    Write_HMI("t2", "txt", roundFloatToString(GET_THETA_2() + THETA2_OFFSET, 1));
+    Write_HMI("t3", "txt", roundFloatToString(GET_THETA_3(), 1));
+    Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+    Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+    Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    Write_HMI("xfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(0, 3).value() * 10) / 10, 1));
+    Write_HMI("yfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(1, 3).value() * 10) / 10, 1));
+    Write_HMI("zfk", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(2, 3).value() * 10) / 10, 1));
+    Update_Encoder_State();
+
+    Check_And_Run_Robot_IK_ENC();
+
+    Update_Home_Sensor_State();
+}
+void Select_EE_Orientation_Page()
+{
+    Read_HMI();
+    Update_Encoder_State();
+    if (HMI_BUFFER_DATA.indexOf("EET4") != NULL_POS)
+        Theta_Selection = "EET4";
+    else if (HMI_BUFFER_DATA.indexOf("EET5") != NULL_POS)
+        Theta_Selection = "EET5";
+    else if (HMI_BUFFER_DATA.indexOf("EET6") != NULL_POS)
+        Theta_Selection = "EET6";
+    clearBufferData();
+    Update_Encoder_State();
+    if (Encoder_Pulse_Resolution != 0)
+    {
+        if (Theta_Selection == "EET4")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(roundToNearestHalfDeg(GET_THETA_4() + Encoder_Pulse_Resolution)), 100000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4()));
+        }
+        else if (Theta_Selection == "EET5")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(roundToNearestHalfDeg(GET_THETA_5() + Encoder_Pulse_Resolution)), 100000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5()));
+        }
+        else if (Theta_Selection == "EET6")
+        {
+            SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(roundToNearestHalfDeg(GET_THETA_6() + Encoder_Pulse_Resolution)), 50000);
+            lastPosition = Teach_Pendant_Encoder.getCount();
+            // Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6()));
+        }
+        else
+            lastPosition = Teach_Pendant_Encoder.getCount();
+    }
+    Update_Encoder_State();
+
+    Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+    Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+    Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    printMatrix(FK_Jog);
+
+    Write_HMI("r11", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 0).value(), 2));
+    Write_HMI("r12", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 1).value(), 2));
+    Write_HMI("r13", "txt", roundFloatToString(FK_Jog.block<1, 1>(0, 2).value(), 2));
+
+    Write_HMI("r21", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 0).value(), 2));
+    Write_HMI("r22", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 1).value(), 2));
+    Write_HMI("r23", "txt", roundFloatToString(FK_Jog.block<1, 1>(1, 2).value(), 2));
+
+    Write_HMI("r31", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 0).value(), 2));
+    Write_HMI("r32", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 1).value(), 2));
+    Write_HMI("r33", "txt", roundFloatToString(FK_Jog.block<1, 1>(2, 2).value(), 2));
+
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("CRTEE") != NULL_POS)
+    {
+        R_0_6_Temp << FK_Jog.block<1, 1>(0, 0).value(), FK_Jog.block<1, 1>(0, 1).value(), FK_Jog.block<1, 1>(0, 2),
+            FK_Jog.block<1, 1>(1, 0).value(), FK_Jog.block<1, 1>(1, 1).value(), FK_Jog.block<1, 1>(1, 2).value(),
+            FK_Jog.block<1, 1>(2, 0), FK_Jog.block<1, 1>(2, 1), FK_Jog.block<1, 1>(2, 2).value();
+        Write_HMI("almEEC", "txt", "EEC Created!");
+    }
+}
+void Run_Robot_To_Target_Base_Mode(String move_Mode)
+{
+    unsigned int Time_Move_Change = 10;
+    if (EE_Selection == "EE3" || EE_Selection == "EE4")
+        FIND_NEAREST_SOLUTION = true;
+    else
+        FIND_NEAREST_SOLUTION = false;
+    IK_Result = Inverse_Kinematics(EE_Target_Matrix, R_0_6_Temp);
+    Serial.printf("IK_Result: %s\n", IK_Result.c_str());
+    if (IK_Result.indexOf("OK") != NULL_POS)
+    {
+        Theta1_IK_READY = splitString(IK_Result, ";", 1).toFloat();
+        Theta2_IK_READY = splitString(IK_Result, ";", 2).toFloat();
+        Theta3_IK_READY = splitString(IK_Result, ";", 3).toFloat();
+        Theta4_IK_READY = splitString(IK_Result, ";", 4).toFloat();
+        Theta5_IK_READY = splitString(IK_Result, ";", 5).toFloat();
+        Theta6_IK_READY = splitString(IK_Result, ";", 6).toFloat();
+
+        theta1_old = GET_THETA_1();
+        theta2_old = GET_THETA_2() + THETA2_OFFSET;
+        theta3_old = GET_THETA_3();
+        theta4_old = GET_THETA_4();
+        theta5_old = GET_THETA_5();
+        theta6_old = GET_THETA_6();
+
+        if (move_Mode == "EEMOVE")
+        {
+            switch (Speed_Selection_Mode)
+            {
+            case 1:
+                Time_Move_Change = 15;
+                break;
+            case 2:
+                Time_Move_Change = 10;
+                break;
+            case 3:
+                Time_Move_Change = 5;
+                break;
+            default:
+                Time_Move_Change = 15;
+                break;
+            }
+        }
+        else if (move_Mode == "AXISMOVE")
+        {
+            switch (Speed_Selection_Mode)
+            {
+            case 1:
+                Time_Move_Change = 1;
+                break;
+            case 2:
+                Time_Move_Change = 1;
+                break;
+            case 3:
+                Time_Move_Change = 1;
+                break;
+            default:
+                Time_Move_Change = 1;
+                break;
+            }
+        }
+        else if (move_Mode == "ROWMOVE")
+            Time_Move_Change = Row_Data_T1.moveTimeValue;
+        else
+            Time_Move_Change = 10;
+
+        Speed_1 = SPEED_SERVO_1(Theta1_IK_READY, theta1_old, Time_Move_Change);
+        Speed_2 = SPEED_SERVO_2(Theta2_IK_READY - 90, theta2_old - 90, Time_Move_Change);
+        Speed_3 = SPEED_SERVO_3(Theta3_IK_READY, theta3_old, Time_Move_Change);
+        Speed_4 = SPEED_SERVO_4(Theta4_IK_READY, theta4_old, Time_Move_Change);
+        Speed_5 = SPEED_SERVO_5(Theta5_IK_READY, theta5_old, Time_Move_Change);
+        Speed_6 = SPEED_SERVO_6(Theta6_IK_READY, theta6_old, Time_Move_Change);
+
+        Serial.printf("THETA READY: T1: %f, T2: %f, T3: %f, T4: %f, T5: %f, T6: %f\n",
+                      Theta1_IK_READY, Theta2_IK_READY, Theta3_IK_READY, Theta4_IK_READY, Theta5_IK_READY, Theta6_IK_READY);
+        Serial.printf("SPEED READY: S1: %d, S2: %d, S3: %d, S4: %d, S5: %d, S6: %d\n",
+                      Speed_1, Speed_2, Speed_3, Speed_4, Speed_5, Speed_6);
+        Serial.printf("TIME READY: %d\n", Run_Time_Target);
+
+        SERVO_MoveSingleAxisAbsPos(ID_1, DEG_TO_POS_1_CONV(Theta1_IK_READY), Speed_1);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_2, DEG_TO_POS_2_CONV(Theta2_IK_READY - 90), Speed_2);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_3, DEG_TO_POS_3_CONV(Theta3_IK_READY), Speed_3);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(Theta4_IK_READY), Speed_4);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(Theta5_IK_READY), Speed_5);
+        delayMicroseconds(1500);
+        SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(Theta6_IK_READY), Speed_6);
+        delayMicroseconds(1500);
+
+        Serial.println("DONE TASK!");
+        Serial.printf("THETA UPDATE: T1: %f, T2: %f, T3: %f, T4: %f, T5: %f, T6: %f\n",
+                      GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    }
+}
+void Move_Change_EE_Orientatation_Base_Mode_Page()
+{
+    Serial.println("Move_Change_EE_Orientatation_Base_Mode_Page");
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    EE_Target_Matrix << round(FK_Jog.block<1, 1>(0, 3).value()),
+        round(FK_Jog.block<1, 1>(1, 3).value()),
+        round(FK_Jog.block<1, 1>(2, 3).value());
+    Run_Robot_To_Target_Base_Mode("EEMOVE");
+}
+void Check_Move_Change_EE_Orientation_Base_Mode()
+{
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("EE1") != NULL_POS)
+    {
+        bool EN_MOVE = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+        if (EN_MOVE)
+        {
+            R_0_6_Temp << 1, 0, 0,
+                0, -1, 0,
+                0, 0, -1;
+            Serial.println("EE1 Selected!");
+            EE_Selection = "EE1";
+            Move_Change_EE_Orientatation_Base_Mode_Page();
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("EE2") != NULL_POS)
+    {
+        bool EN_MOVE = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+        if (EN_MOVE)
+        {
+            R_0_6_Temp << 0, 0, 1,
+                0, -1, 0,
+                1, 0, 0;
+            Serial.println("EE2 Selected!");
+            EE_Selection = "EE2";
+            Move_Change_EE_Orientatation_Base_Mode_Page();
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("EE3") != NULL_POS)
+    {
+        bool EN_MOVE = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+        if (EN_MOVE)
+        {
+            R_0_6_Temp << 1, 0, 0,
+                0, 0, 1,
+                0, -1, 0;
+            Serial.println("EE3 Selected!");
+            EE_Selection = "EE3";
+            FIND_NEAREST_SOLUTION = true;
+            Move_Change_EE_Orientatation_Base_Mode_Page();
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("EE4") != NULL_POS)
+    {
+        bool EN_MOVE = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+        if (EN_MOVE)
+        {
+            R_0_6_Temp << -1, 0, 0,
+                0, 0, -1,
+                0, -1, 0;
+            Serial.println("EE4 Selected!");
+            EE_Selection = "EE4";
+            FIND_NEAREST_SOLUTION = true;
+            Move_Change_EE_Orientatation_Base_Mode_Page();
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("EEC") != NULL_POS)
+    {
+        SET_ALL_ACCELERATION_TIME(600);
+        SET_ALL_DECELERATION_TIME(600);
+        do
+        {
+            Read_HMI();
+            if (HMI_BUFFER_DATA.indexOf("EET4") != NULL_POS)
+                Theta_Selection = "EET4";
+            else if (HMI_BUFFER_DATA.indexOf("EET5") != NULL_POS)
+                Theta_Selection = "EET5";
+            else if (HMI_BUFFER_DATA.indexOf("EET6") != NULL_POS)
+                Theta_Selection = "EET6";
+            Update_Encoder_State();
+            if (Encoder_Pulse_Resolution != 0)
+            {
+                if (Theta_Selection == "EET4")
+                {
+                    SERVO_MoveSingleAxisAbsPos(ID_4, DEG_TO_POS_4_CONV(roundToNearestHalfDeg(GET_THETA_4() + Encoder_Pulse_Resolution)), 100000);
+                    lastPosition = Teach_Pendant_Encoder.getCount();
+                    // Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4()));
+                }
+                else if (Theta_Selection == "EET5")
+                {
+                    SERVO_MoveSingleAxisAbsPos(ID_5, DEG_TO_POS_5_CONV(roundToNearestHalfDeg(GET_THETA_5() + Encoder_Pulse_Resolution)), 100000);
+                    lastPosition = Teach_Pendant_Encoder.getCount();
+                    // Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5()));
+                }
+                else if (Theta_Selection == "EET6")
+                {
+                    SERVO_MoveSingleAxisAbsPos(ID_6, DEG_TO_POS_6_CONV(roundToNearestHalfDeg(GET_THETA_6() + Encoder_Pulse_Resolution)), 50000);
+                    lastPosition = Teach_Pendant_Encoder.getCount();
+                    // Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6()));
+                }
+                else
+                    lastPosition = Teach_Pendant_Encoder.getCount();
+            }
+            Update_Speed_Selection();
+            Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+            Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+            Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+            Read_HMI();
+        } while (HMI_BUFFER_DATA.indexOf("CRTEE") == NULL_POS);
+
+        FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+        printMatrix(FK_Jog);
+
+        R_0_6_Temp << FK_Jog.block<1, 1>(0, 0).value(), FK_Jog.block<1, 1>(0, 1).value(), FK_Jog.block<1, 1>(0, 2),
+            FK_Jog.block<1, 1>(1, 0).value(), FK_Jog.block<1, 1>(1, 1).value(), FK_Jog.block<1, 1>(1, 2).value(),
+            FK_Jog.block<1, 1>(2, 0), FK_Jog.block<1, 1>(2, 1), FK_Jog.block<1, 1>(2, 2).value();
+        printMatrix(R_0_6_Temp);
+        Write_HMI("almEEC", "pco", 2016);
+        Write_HMI("almEEC", "txt", "EEC Created!");
+        Write_HMI("almEEC", "pco", 63488);
+        clearBufferData();
+    }
+}
+void Base_Mode_Page()
+{
+    Read_HMI();
+    Update_Speed_Selection();
+    Update_Out_Relay_Status();
+    Update_Encoder_State();
+
+    Update_Speed_Selection();
+    Check_Move_Change_EE_Orientation_Base_Mode();
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("XAXIS") != NULL_POS)
+        Axis_Selection = "XAXIS";
+    else if (HMI_BUFFER_DATA.indexOf("YAXIS") != NULL_POS)
+        Axis_Selection = "YAXIS";
+    else if (HMI_BUFFER_DATA.indexOf("ZAXIS") != NULL_POS)
+        Axis_Selection = "ZAXIS";
+    clearBufferData();
+    Update_Speed_Selection();
+    Check_Move_Change_EE_Orientation_Base_Mode();
+    Update_Encoder_State();
+    // Serial.printf("Axis_Resolution: %f\n", Axis_Resolution);
+    if (Axis_Resolution >= -50 && Axis_Resolution != 0 && Axis_Resolution <= 50)
+    {
+        bool EN_MOVE = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+        if (EN_MOVE)
+        {
+            if (Axis_Selection == "XAXIS")
+            {
+                FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+                EE_Target_Matrix << round(FK_Jog.block<1, 1>(0, 3).value() + Axis_Resolution),
+                    round(FK_Jog.block<1, 1>(1, 3).value()),
+                    round(FK_Jog.block<1, 1>(2, 3).value());
+                Run_Robot_To_Target_Base_Mode("AXISMOVE");
+                lastPosition = Teach_Pendant_Encoder.getCount();
+            }
+            else if (Axis_Selection == "YAXIS")
+            {
+                FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+                EE_Target_Matrix << round(FK_Jog.block<1, 1>(0, 3).value()),
+                    round(FK_Jog.block<1, 1>(1, 3).value() + Axis_Resolution),
+                    round(FK_Jog.block<1, 1>(2, 3).value());
+                Run_Robot_To_Target_Base_Mode("AXISMOVE");
+                lastPosition = Teach_Pendant_Encoder.getCount();
+            }
+            else if (Axis_Selection == "ZAXIS")
+            {
+                FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+                EE_Target_Matrix << round(FK_Jog.block<1, 1>(0, 3).value()),
+                    round(FK_Jog.block<1, 1>(1, 3).value()),
+                    round(FK_Jog.block<1, 1>(2, 3).value() + Axis_Resolution);
+                Run_Robot_To_Target_Base_Mode("AXISMOVE");
+                lastPosition = Teach_Pendant_Encoder.getCount();
+            }
+            else
+                lastPosition = Teach_Pendant_Encoder.getCount();
+        }
+        else
+            lastPosition = Teach_Pendant_Encoder.getCount();
+    }
+    else
+        lastPosition = Teach_Pendant_Encoder.getCount();
+    Update_Speed_Selection();
+    Check_Move_Change_EE_Orientation_Base_Mode();
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    Write_HMI("x", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(0, 3).value() * 10) / 10, 1));
+    Write_HMI("y", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(1, 3).value() * 10) / 10, 1));
+    Write_HMI("z", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(2, 3).value() * 10) / 10, 1));
+    Write_HMI("t4", "txt", roundFloatToString(GET_THETA_4(), 1));
+    Write_HMI("t5", "txt", roundFloatToString(GET_THETA_5(), 1));
+    Write_HMI("t6", "txt", roundFloatToString(GET_THETA_6(), 1));
+}
+void Add_Row_Data_To_File(unsigned int rowNo)
+{
+    String pathFile = "/P" + String(rowNo) + "T" + String(Table_No) + ".txt";
+    String markAndRowInfo = "1;" + String(Row_Data_T1.rowNo) + ";" + Row_Data_T1.posName + ";";
+    String positionInfo = String(Row_Data_T1.EEx_Value) + ";" + String(Row_Data_T1.EEy_Value) + ";" + String(Row_Data_T1.EEz_Value) + ";" + Row_Data_T1.EE_Orientation + ";";
+    String timeAndRelayState = String(Row_Data_T1.moveTimeValue) + ";" + String(Row_Data_T1.waitTimeValue) + ";" + Row_Data_T1.out1State + ";" + Row_Data_T1.out2State + ";";
+    String R_0_6_EEC = "";
+    if (Row_Data_T1.EE_Orientation == "EEC")
+    {
+        String R_0_6_EEC_1 = String(Row_Data_T1.EEC_R06_Matrix.r11) + ";" + String(Row_Data_T1.EEC_R06_Matrix.r12) + ";" + String(Row_Data_T1.EEC_R06_Matrix.r13) + ";";
+        String R_0_6_EEC_2 = String(Row_Data_T1.EEC_R06_Matrix.r21) + ";" + String(Row_Data_T1.EEC_R06_Matrix.r22) + ";" + String(Row_Data_T1.EEC_R06_Matrix.r23) + ";";
+        String R_0_6_EEC_3 = String(Row_Data_T1.EEC_R06_Matrix.r31) + ";" + String(Row_Data_T1.EEC_R06_Matrix.r32) + ";" + String(Row_Data_T1.EEC_R06_Matrix.r33) + ";";
+        R_0_6_EEC = R_0_6_EEC_1 + R_0_6_EEC_2 + R_0_6_EEC_3;
+    }
+    else
+        R_0_6_EEC = "";
+
+    String content = markAndRowInfo + positionInfo + timeAndRelayState + R_0_6_EEC;
+    Serial.printf("PathFile: %s\n", pathFile.c_str());
+    Serial.printf("Content: %s\n", content.c_str());
+    bool writeFileStatus = writeFile(SD, pathFile.c_str(), content.c_str());
+    if (writeFileStatus == true)
+    {
+        // Alarm_HMI("Saved Successfully!");
+        ENABLE_BUZZER(50);
+        delay(50);
+        ENABLE_BUZZER(50);
+    }
+    else
+        Alarm_HMI("Save Failed!");
+}
+void Add_HMI_Data_To_Struct()
+{
+    Row_Data_T1.posName = splitString(HMI_BUFFER_DATA, ";", 1);
+    Row_Data_T1.EEx_Value = splitString(HMI_BUFFER_DATA, ";", 2).toFloat();
+    Row_Data_T1.EEy_Value = splitString(HMI_BUFFER_DATA, ";", 3).toFloat();
+    Row_Data_T1.EEz_Value = splitString(HMI_BUFFER_DATA, ";", 4).toFloat();
+    Row_Data_T1.EE_Orientation = splitString(HMI_BUFFER_DATA, ";", 5);
+    Row_Data_T1.moveTimeValue = splitString(HMI_BUFFER_DATA, ";", 6).toInt();
+    Row_Data_T1.waitTimeValue = splitString(HMI_BUFFER_DATA, ";", 7).toInt();
+    Row_Data_T1.out1State = splitString(HMI_BUFFER_DATA, ";", 8);
+    Row_Data_T1.out2State = splitString(HMI_BUFFER_DATA, ";", 9);
+    if (Row_Data_T1.EE_Orientation == "EEC")
+    {
+        Row_Data_T1.EEC_R06_Matrix.r11 = R_0_6_Temp.block<1, 1>(0, 0).value();
+        Row_Data_T1.EEC_R06_Matrix.r12 = R_0_6_Temp.block<1, 1>(0, 1).value();
+        Row_Data_T1.EEC_R06_Matrix.r13 = R_0_6_Temp.block<1, 1>(0, 2).value();
+
+        Row_Data_T1.EEC_R06_Matrix.r21 = R_0_6_Temp.block<1, 1>(1, 0).value();
+        Row_Data_T1.EEC_R06_Matrix.r22 = R_0_6_Temp.block<1, 1>(1, 1).value();
+        Row_Data_T1.EEC_R06_Matrix.r23 = R_0_6_Temp.block<1, 1>(1, 2).value();
+
+        Row_Data_T1.EEC_R06_Matrix.r31 = R_0_6_Temp.block<1, 1>(2, 0).value();
+        Row_Data_T1.EEC_R06_Matrix.r32 = R_0_6_Temp.block<1, 1>(2, 1).value();
+        Row_Data_T1.EEC_R06_Matrix.r33 = R_0_6_Temp.block<1, 1>(2, 2).value();
+    }
+}
+void Add_SD_Data_To_Struct(String rowData)
+{
+    Row_Data_T1.rowNo = splitString(rowData, ";", 1).toInt();
+    Row_Data_T1.posName = splitString(rowData, ";", 2);
+    Row_Data_T1.EEx_Value = splitString(rowData, ";", 3).toFloat();
+    Row_Data_T1.EEy_Value = splitString(rowData, ";", 4).toFloat();
+    Row_Data_T1.EEz_Value = splitString(rowData, ";", 5).toFloat();
+    Row_Data_T1.EE_Orientation = splitString(rowData, ";", 6);
+    Row_Data_T1.moveTimeValue = splitString(rowData, ";", 7).toInt();
+    Row_Data_T1.waitTimeValue = splitString(rowData, ";", 8).toInt();
+    Row_Data_T1.out1State = splitString(rowData, ";", 9);
+    Row_Data_T1.out2State = splitString(rowData, ";", 10);
+    if (Row_Data_T1.EE_Orientation == "EEC")
+    {
+        Row_Data_T1.EEC_R06_Matrix.r11 = splitString(rowData, ";", 11).toFloat();
+        Row_Data_T1.EEC_R06_Matrix.r12 = splitString(rowData, ";", 12).toFloat();
+        Row_Data_T1.EEC_R06_Matrix.r13 = splitString(rowData, ";", 13).toFloat();
+
+        Row_Data_T1.EEC_R06_Matrix.r21 = splitString(rowData, ";", 14).toFloat();
+        Row_Data_T1.EEC_R06_Matrix.r22 = splitString(rowData, ";", 15).toFloat();
+        Row_Data_T1.EEC_R06_Matrix.r23 = splitString(rowData, ";", 16).toFloat();
+
+        Row_Data_T1.EEC_R06_Matrix.r31 = splitString(rowData, ";", 17).toFloat();
+        Row_Data_T1.EEC_R06_Matrix.r32 = splitString(rowData, ";", 18).toFloat();
+        Row_Data_T1.EEC_R06_Matrix.r33 = splitString(rowData, ";", 19).toFloat();
+    }
+}
+void Edit_Data_To_Struct()
+{
+    Row_Data_T1.rowNo = splitString(HMI_BUFFER_DATA, ";", 1).toInt();
+    Row_Data_T1.posName = splitString(HMI_BUFFER_DATA, ";", 2);
+    Row_Data_T1.EEx_Value = splitString(HMI_BUFFER_DATA, ";", 3).toFloat();
+    Row_Data_T1.EEy_Value = splitString(HMI_BUFFER_DATA, ";", 4).toFloat();
+    Row_Data_T1.EEz_Value = splitString(HMI_BUFFER_DATA, ";", 5).toFloat();
+    Row_Data_T1.EE_Orientation = splitString(HMI_BUFFER_DATA, ";", 6);
+    Row_Data_T1.moveTimeValue = splitString(HMI_BUFFER_DATA, ";", 7).toInt();
+    Row_Data_T1.waitTimeValue = splitString(HMI_BUFFER_DATA, ";", 8).toInt();
+    Row_Data_T1.out1State = splitString(HMI_BUFFER_DATA, ";", 9);
+    Row_Data_T1.out2State = splitString(HMI_BUFFER_DATA, ";", 10);
+    if (Row_Data_T1.EE_Orientation == "EEC")
+    {
+        Row_Data_T1.EEC_R06_Matrix.r11 = R_0_6_Temp.block<1, 1>(0, 0).value();
+        Row_Data_T1.EEC_R06_Matrix.r12 = R_0_6_Temp.block<1, 1>(0, 1).value();
+        Row_Data_T1.EEC_R06_Matrix.r13 = R_0_6_Temp.block<1, 1>(0, 2).value();
+
+        Row_Data_T1.EEC_R06_Matrix.r21 = R_0_6_Temp.block<1, 1>(1, 0).value();
+        Row_Data_T1.EEC_R06_Matrix.r22 = R_0_6_Temp.block<1, 1>(1, 1).value();
+        Row_Data_T1.EEC_R06_Matrix.r23 = R_0_6_Temp.block<1, 1>(1, 2).value();
+
+        Row_Data_T1.EEC_R06_Matrix.r31 = R_0_6_Temp.block<1, 1>(2, 0).value();
+        Row_Data_T1.EEC_R06_Matrix.r32 = R_0_6_Temp.block<1, 1>(2, 1).value();
+        Row_Data_T1.EEC_R06_Matrix.r33 = R_0_6_Temp.block<1, 1>(2, 2).value();
+    }
+}
+void Update_Row_Data_HMI(unsigned int row_update)
+{
+    unsigned int rowNo = (unsigned int)(row_update - ((row_begin + 9) / 10 - 1) * 10);
+    Serial.printf("Update Data Row: %d - [Row_Update: %d]\n", rowNo, row_update);
+    Write_HMI("n" + String(rowNo), "txt", String(row_update));
+    Write_HMI("p" + String(rowNo), "txt", Row_Data_T1.posName);
+    Write_HMI("x" + String(rowNo), "txt", roundFloatToString(Row_Data_T1.EEx_Value, 1));
+    Write_HMI("y" + String(rowNo), "txt", roundFloatToString(Row_Data_T1.EEy_Value, 1));
+    Write_HMI("z" + String(rowNo), "txt", roundFloatToString(Row_Data_T1.EEz_Value, 1));
+    Write_HMI("e" + String(rowNo), "txt", Row_Data_T1.EE_Orientation);
+    Write_HMI("m" + String(rowNo), "txt", String(Row_Data_T1.moveTimeValue));
+    Write_HMI("w" + String(rowNo), "txt", String(Row_Data_T1.waitTimeValue));
+    Write_HMI("o1" + String(rowNo), "pco", Row_Data_T1.out1State == "ON" ? 2016 : 63488);
+    Write_HMI("o1" + String(rowNo), "txt", Row_Data_T1.out1State);
+    Write_HMI("o2" + String(rowNo), "pco", Row_Data_T1.out2State == "ON" ? 2016 : 63488);
+    Write_HMI("o2" + String(rowNo), "txt", Row_Data_T1.out2State);
+}
+void Update_Row_Null_HMI(unsigned int row_update)
+{
+    unsigned int rowNo = (unsigned int)(row_update - ((row_begin + 9) / 10 - 1) * 10);
+    Serial.printf("Update Null Row: %d - [Row_Update: %d]\n", rowNo, row_update);
+    Write_HMI("n" + String(rowNo), "txt", "");
+    Write_HMI("p" + String(rowNo), "txt", "");
+    Write_HMI("x" + String(rowNo), "txt", "");
+    Write_HMI("y" + String(rowNo), "txt", "");
+    Write_HMI("z" + String(rowNo), "txt", "");
+    Write_HMI("e" + String(rowNo), "txt", "");
+    Write_HMI("m" + String(rowNo), "txt", "");
+    Write_HMI("w" + String(rowNo), "txt", "");
+    Write_HMI("o1" + String(rowNo), "txt", "");
+    Write_HMI("o2" + String(rowNo), "txt", "");
+}
+void Update_Data_Table(unsigned int row_begin, unsigned int row_end)
+{
+    Write_HMI("tablename", "txt", Table_Name);
+    Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+    for (unsigned int row = row_begin; row <= row_end; row++)
+    {
+        String pathFile = "/P" + String(row) + "T" + String(Table_No) + ".txt";
+        String contentReturn = readFile(SD, pathFile.c_str());
+
+        Serial.printf("PathFile: %s\n", pathFile.c_str());
+        Serial.printf("Content: %s\n", contentReturn.c_str());
+
+        if (splitString(contentReturn, ";", 0) == "1")
+        {
+            Serial.printf("Write data to row %d\n", row);
+            Add_SD_Data_To_Struct(contentReturn);
+            Update_Row_Data_HMI(Row_Data_T1.rowNo);
+        }
+        else
+        {
+            Update_Row_Null_HMI(row);
+        }
+    }
+}
+void Mark_Row(unsigned int row_update, bool runState)
+{
+    unsigned int rowNo = (unsigned int)(row_update - ((row_begin + 9) / 10 - 1) * 10);
+    Serial.printf("Mark Row: %d - [Row_Update: %d]\n", rowNo, row_update);
+    Write_HMI("r" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("n" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("p" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("x" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("y" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("z" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("e" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("m" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("w" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("o1" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+    Write_HMI("o2" + String(rowNo), "picc", (runState == true) ? 17 : 16);
+}
+void Clear_Data_Table()
+{
+    Serial.println("Clear Data Table");
+    Update_Data_Table(row_begin, row_begin + 9);
+    for (int i = 1; i <= sizeof(Row_Data_T1.Mark_Array) / sizeof(Row_Data_T1.Mark_Array[1]); i++)
+    {
+        Serial.printf("Clear Row: %d\n", i);
+        String pathFile = "/P" + String(i) + "T" + String(Table_No) + ".txt";
+        String contentReturn = readFile(SD, pathFile.c_str());
+        String contentWrite = " ";
+
+        Serial.printf("PathFile: %s\n", pathFile.c_str());
+        Serial.printf("contentReturn: %s\n", contentReturn.c_str());
+
+        if (splitString(contentReturn, ";", 0) == "1")
+        {
+            bool writeFileStatus = writeFile(SD, pathFile.c_str(), contentWrite.c_str());
+            Update_Row_Null_HMI(i);
+            if (writeFileStatus == true)
+            {
+                // Serial.printf("Cleared Row: %d\n", i);
+                Mark_Row(i, true);
+                ENABLE_BUZZER(75);
+                Mark_Row(i, false);
+            }
+            else
+                Alarm_HMI("Clear Failed!");
+        }
+        else
+        {
+            Serial.println("Clear Done");
+            Alarm_HMI("Clear Successfully!");
+            ENABLE_BUZZER(300);
+            return;
+        }
+    }
+}
+void Run_Robot_Position_Table()
+{
+    row_begin = 1;
+    Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+    Update_Data_Table(row_begin, row_begin + 9);
+    for (int i = 1; i <= sizeof(Row_Data_T1.Mark_Array) / sizeof(Row_Data_T1.Mark_Array[1]); i++)
+    {
+        String pathFile_RUN = "/P" + String(i) + "T" + String(Table_No) + ".txt";
+        String contentReturn_RUN = readFile(SD, pathFile_RUN.c_str());
+
+        Serial.printf("RUN at PathFile: %s\n", pathFile_RUN.c_str());
+        Serial.printf("RUN Content: %s\n", contentReturn_RUN.c_str());
+
+        if (splitString(contentReturn_RUN, ";", 0) == "1")
+        {
+            Serial.printf("Run at row %d\n", i);
+            if (i > row_begin + 9)
+            {
+                row_begin += 10;
+                Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+                Update_Data_Table(row_begin, row_begin + 9);
+            }
+            Add_SD_Data_To_Struct(contentReturn_RUN);
+            Mark_Row(Row_Data_T1.rowNo, true);
+            EE_Target_Matrix << Row_Data_T1.EEx_Value,
+                Row_Data_T1.EEy_Value,
+                Row_Data_T1.EEz_Value;
+            FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+            bool X_Move = round(FK_Jog.block<1, 1>(0, 3).value()) == round(Row_Data_T1.EEx_Value);
+            bool Y_Move = round(FK_Jog.block<1, 1>(1, 3).value()) == round(Row_Data_T1.EEy_Value);
+            bool Z_Move = round(FK_Jog.block<1, 1>(2, 3).value()) == round(Row_Data_T1.EEz_Value);
+
+            if (X_Move == true || Y_Move == true || Z_Move == true)
+            {
+                SET_ALL_ACCELERATION_TIME(80);
+                SET_ALL_DECELERATION_TIME(80);
+            }
+            else
+            {
+                SET_ALL_ACCELERATION_TIME(600);
+                SET_ALL_DECELERATION_TIME(600);
+            }
+
+            if (Row_Data_T1.EE_Orientation == "EE1")
+            {
+                Write_HMI("EEOri", "txt", "EE1");
+                R_0_6_Temp << 1, 0, 0,
+                    0, -1, 0,
+                    0, 0, -1;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EE2")
+            {
+                Write_HMI("EEOri", "txt", "EE2");
+                R_0_6_Temp << 0, 0, 1,
+                    0, -1, 0,
+                    1, 0, 0;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EE3")
+            {
+                Write_HMI("EEOri", "txt", "EE3");
+                R_0_6_Temp << 1, 0, 0,
+                    0, 0, 1,
+                    0, -1, 0;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EE4")
+            {
+                Write_HMI("EEOri", "txt", "EE4");
+                R_0_6_Temp << -1, 0, 0,
+                    0, 0, -1,
+                    0, -1, 0;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EEC")
+            {
+                Write_HMI("EEOri", "txt", "EEC");
+                R_0_6_Temp << Row_Data_T1.EEC_R06_Matrix.r11, Row_Data_T1.EEC_R06_Matrix.r12, Row_Data_T1.EEC_R06_Matrix.r13,
+                    Row_Data_T1.EEC_R06_Matrix.r21, Row_Data_T1.EEC_R06_Matrix.r22, Row_Data_T1.EEC_R06_Matrix.r23,
+                    Row_Data_T1.EEC_R06_Matrix.r31, Row_Data_T1.EEC_R06_Matrix.r32, Row_Data_T1.EEC_R06_Matrix.r33;
+            }
+            Run_Robot_To_Target_Base_Mode("ROWMOVE");
+            bool EXIT1 = false, EXIT2 = false, EXIT3 = false;
+            do
+            {
+                FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+                Write_HMI("x", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(0, 3).value() * 10) / 10, 1));
+                Write_HMI("y", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(1, 3).value() * 10) / 10, 1));
+                Write_HMI("z", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(2, 3).value() * 10) / 10, 1));
+
+                EXIT1 = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+                // EXIT2 = round(GET_THETA_1()) == round(Theta1_IK_READY) && round(GET_THETA_2() + THETA2_OFFSET) == round(Theta2_IK_READY) && round(GET_THETA_3()) == round(Theta3_IK_READY);
+                // EXIT3 = round(GET_THETA_4()) == round(Theta4_IK_READY) && round(GET_THETA_5()) == round(Theta5_IK_READY) && round(GET_THETA_6()) == round(Theta6_IK_READY);
+                if (digitalRead(RED_BUTTON) == 0 && digitalRead(GREEN_BUTTON) == 0)
+                {
+                    Mark_Row(Row_Data_T1.rowNo, false);
+                    return;
+                }
+            } while (!(EXIT1));
+            if (Row_Data_T1.out1State == "ON")
+                digitalWrite(RELAY_5, HIGH);
+            else if (Row_Data_T1.out1State == "OFF")
+                digitalWrite(RELAY_5, LOW);
+            if (Row_Data_T1.out2State == "ON")
+                digitalWrite(RELAY_6, HIGH);
+            else if (Row_Data_T1.out2State == "OFF")
+                digitalWrite(RELAY_6, LOW);
+            delay(Row_Data_T1.waitTimeValue * 1000);
+            Mark_Row(Row_Data_T1.rowNo, false);
+        }
+        else
+        {
+            ENABLE_BUZZER(500);
+            row_begin = 1;
+            Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+            Update_Data_Table(row_begin, row_begin + 9);
+            break;
+        }
+        if (digitalRead(RED_BUTTON) == 0 && digitalRead(GREEN_BUTTON) == 0)
+        {
+            Mark_Row(i, false);
+            return;
+        }
+    }
+}
+void Position_Table_Page()
+{
+    Read_HMI();
+    // Serial.println(HMI_BUFFER_DATA.c_str());
+    bool New_Row_Data = false;
+    if (HMI_BUFFER_DATA.indexOf("ADDR") != NULL_POS)
+    {
+        for (int i = 1; i <= sizeof(Row_Data_T1.Mark_Array) / sizeof(Row_Data_T1.Mark_Array[1]); i++)
+        {
+            String pathFile = "/P" + String(i) + "T" + String(Table_No) + ".txt";
+            String contentReturn = readFile(SD, pathFile.c_str());
+
+            Serial.printf("PathFile: %s\n", pathFile.c_str());
+            Serial.printf("Content: %s\n", contentReturn.c_str());
+
+            if (splitString(contentReturn, ";", 0) != "1")
+            {
+                Serial.printf("Mark i = %d is null !\n", i);
+                Row_Data_T1.Mark_Array[i] = 1;
+                Row_Data_T1.rowNo = i;
+                Add_HMI_Data_To_Struct();
+                Add_Row_Data_To_File(Row_Data_T1.rowNo);
+                // Write_HMI("tablename", "txt", Table_Name);
+                // Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+                // Update_Data_Table(row_begin, row_begin + 9);
+                // Update_Row_Data_HMI(Row_Data_T1.rowNo);
+                break;
+            }
+        }
+        New_Row_Data = true;
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("EDIT") != NULL_POS)
+    {
+        Edit_Data_To_Struct();
+        Add_Row_Data_To_File(Row_Data_T1.rowNo);
+        // Update_Row_Data_HMI(Row_Data_T1.rowNo);
+        New_Row_Data = true;
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("RUN") != NULL_POS)
+    {
+        Run_Robot_Position_Table();
+        clearBufferData();
+    }
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("RIGHT") != NULL_POS)
+    {
+        if (row_begin <= 81)
+        {
+            row_begin += 10;
+            Update_Data_Table(row_begin, row_begin + 9);
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("LEFT") != NULL_POS)
+    {
+        if (row_begin >= 11)
+        {
+            row_begin -= 10;
+            Update_Data_Table(row_begin, row_begin + 9);
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("CTBN") != NULL_POS)
+    {
+        if (Table_No >= 1)
+        {
+            Table_No++;
+            if (Table_No > Max_Table_No)
+                Table_No = 1;
+            Serial.printf("Table No: %d\n", Table_No);
+            row_begin = 1;
+            switch (Table_No)
+            {
+            case 1:
+                Table_Name = "Jog Program";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 2:
+                Table_Name = "Prog Test 1";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 3:
+                Table_Name = "Prog Test 2";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 4:
+                Table_Name = "Prog Test 3";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 5:
+                Table_Name = "Table P1";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 6:
+                Table_Name = "Table P2";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 7:
+                Table_Name = "Table P3";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 8:
+                Table_Name = "Table P4";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 9:
+                Table_Name = "Table P5";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            case 10:
+                Table_Name = "Table P6";
+                Update_Data_Table(row_begin, row_begin + 9);
+                break;
+            default:
+                break;
+            }
+        }
+        clearBufferData();
+    }
+    else if (HMI_BUFFER_DATA.indexOf("CLRTB") != NULL_POS)
+    {
+        Clear_Data_Table();
+        clearBufferData();
+    }
+    if (New_Row_Data == true)
+    {
+        Update_Data_Table(row_begin, row_begin + 9);
+        New_Row_Data = false;
+        clearBufferData();
+    }
+
+    Write_HMI("tablename", "txt", Table_Name);
+    Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+    FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+    Write_HMI("x", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(0, 3).value() * 10) / 10, 1));
+    Write_HMI("y", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(1, 3).value() * 10) / 10, 1));
+    Write_HMI("z", "txt", roundFloatToString(round(FK_Jog.block<1, 1>(2, 3).value() * 10) / 10, 1));
+}
+void TCP_Led()
+{
+    if (Ethernet.linkStatus() == LinkON)
+    {
+        if ((unsigned long)millis() - previous_Time_D >= interval / 2)
+        {
+            D_State = !D_State;
+            Write_HMI("dled", "bco", (D_State ? 64512 : 8518));
+            previous_Time_D = millis();
+        }
+    }
+}
+void LINK_Led()
+{
+    if (Ethernet.linkStatus() == LinkON)
+    {
+        current_Time = millis();
+        if (current_Time - previous_Time >= interval)
+        {
+            L_State = !L_State;
+            Write_HMI("cled", "bco", (L_State ? 2016 : 8518));
+            previous_Time = millis();
+        }
+    }
+    else
+    {
+        current_Time = millis();
+        if (current_Time - previous_Time >= interval)
+        {
+            L_State = !L_State;
+            Write_HMI("cled", "bco", (L_State ? 63488 : 8518));
+            previous_Time = millis();
+        }
+        Write_HMI("dled", "bco", 8518);
+    }
+}
+void Run_Robot_TCP_Mode(int16_t table_target)
+{
+    Modbus.task();
+    Modbus.Hreg(HREG1_DATA_WRITE, 1);
+    // Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+    // Update_Data_Table(row_begin, row_begin + 9);
+    for (int i = 1; i <= sizeof(Row_Data_T1.Mark_Array) / sizeof(Row_Data_T1.Mark_Array[1]); i++)
+    {
+        String pathFile_RUN = "/P" + String(i) + "T" + String(table_target) + ".txt";
+        String contentReturn_RUN = readFile(SD, pathFile_RUN.c_str());
+
+        Serial.printf("RUN at PathFile: %s\n", pathFile_RUN.c_str());
+        Serial.printf("RUN Content: %s\n", contentReturn_RUN.c_str());
+
+        if (splitString(contentReturn_RUN, ";", 0) == "1")
+        {
+            Modbus.task();
+            Modbus.Hreg(HREG1_DATA_WRITE, 1);
+            Serial.printf("Run at row %d\n", i);
+            // if (i > row_begin + 9)
+            // {
+            //     row_begin += 10;
+            //     Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+            //     Update_Data_Table(row_begin, row_begin + 9);
+            // }
+            Add_SD_Data_To_Struct(contentReturn_RUN);
+            // Mark_Row(Row_Data_T1.rowNo, true);
+            EE_Target_Matrix << Row_Data_T1.EEx_Value,
+                Row_Data_T1.EEy_Value,
+                Row_Data_T1.EEz_Value;
+            FK_Jog = Forward_Kinematics(GET_THETA_1(), GET_THETA_2() + THETA2_OFFSET, GET_THETA_3(), GET_THETA_4(), GET_THETA_5(), GET_THETA_6());
+            bool X_Move = round(FK_Jog.block<1, 1>(0, 3).value()) == round(Row_Data_T1.EEx_Value);
+            bool Y_Move = round(FK_Jog.block<1, 1>(1, 3).value()) == round(Row_Data_T1.EEy_Value);
+            bool Z_Move = round(FK_Jog.block<1, 1>(2, 3).value()) == round(Row_Data_T1.EEz_Value);
+
+            if (X_Move == true || Y_Move == true || Z_Move == true)
+            {
+                SET_ALL_ACCELERATION_TIME(80);
+                SET_ALL_DECELERATION_TIME(80);
+            }
+            else
+            {
+                SET_ALL_ACCELERATION_TIME(600);
+                SET_ALL_DECELERATION_TIME(600);
+            }
+
+            if (Row_Data_T1.EE_Orientation == "EE1")
+            {
+                Write_HMI("EEOri", "txt", "EE1");
+                R_0_6_Temp << 1, 0, 0,
+                    0, -1, 0,
+                    0, 0, -1;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EE2")
+            {
+                Write_HMI("EEOri", "txt", "EE2");
+                R_0_6_Temp << 0, 0, 1,
+                    0, -1, 0,
+                    1, 0, 0;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EE3")
+            {
+                Write_HMI("EEOri", "txt", "EE3");
+                R_0_6_Temp << 1, 0, 0,
+                    0, 0, 1,
+                    0, -1, 0;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EE4")
+            {
+                Write_HMI("EEOri", "txt", "EE4");
+                R_0_6_Temp << -1, 0, 0,
+                    0, 0, -1,
+                    0, -1, 0;
+            }
+            else if (Row_Data_T1.EE_Orientation == "EEC")
+            {
+                Write_HMI("EEOri", "txt", "EEC");
+                R_0_6_Temp << Row_Data_T1.EEC_R06_Matrix.r11, Row_Data_T1.EEC_R06_Matrix.r12, Row_Data_T1.EEC_R06_Matrix.r13,
+                    Row_Data_T1.EEC_R06_Matrix.r21, Row_Data_T1.EEC_R06_Matrix.r22, Row_Data_T1.EEC_R06_Matrix.r23,
+                    Row_Data_T1.EEC_R06_Matrix.r31, Row_Data_T1.EEC_R06_Matrix.r32, Row_Data_T1.EEC_R06_Matrix.r33;
+            }
+            Run_Robot_To_Target_Base_Mode("ROWMOVE");
+            bool EXIT1 = false, EXIT2 = false, EXIT3 = false;
+            do
+            {
+                // Serial.printf("i = %d\n", i);
+                if (i > 5)
+                {
+                    if (table_target == 5 || table_target == 6 || table_target == 7)
+                    {
+                        // Serial.printf("table_target = %d\n", table_target);
+                        Modbus.task();
+                        Modbus.Hreg(HREG1_DATA_WRITE, 0);
+                    }
+                }
+                else
+                {
+                    Modbus.task();
+                    Modbus.Hreg(HREG1_DATA_WRITE, 1);
+                }
+                Update_Data_HMI();
+                LINK_Led();
+                TCP_Led();
+
+                EXIT1 = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+                // EXIT2 = round(GET_THETA_1()) == round(Theta1_IK_READY) && round(GET_THETA_2() + THETA2_OFFSET) == round(Theta2_IK_READY) && round(GET_THETA_3()) == round(Theta3_IK_READY);
+                // EXIT3 = round(GET_THETA_4()) == round(Theta4_IK_READY) && round(GET_THETA_5()) == round(Theta5_IK_READY) && round(GET_THETA_6()) == round(Theta6_IK_READY);
+                if (digitalRead(RED_BUTTON) == 0 && digitalRead(GREEN_BUTTON) == 0)
+                {
+                    // Mark_Row(Row_Data_T1.rowNo, false);
+                    return;
+                }
+                if (EXIT1 == true)
+                {
+                    Serial.printf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = %d\n", i);
+                    if (i >= 5)
+                    {
+                        if (table_target == 5 || table_target == 6 || table_target == 7)
+                        {
+                            Serial.printf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaatable_target = %d\n", table_target);
+
+                            Modbus.task();
+                            Modbus.Hreg(HREG1_DATA_WRITE, 0);
+                        }
+                    }
+                }
+            } while (!(EXIT1));
+            unsigned long time_start_wait = millis();
+            do
+            {
+                if (i >= 5)
+                {
+                    if (table_target == 5 || table_target == 6 || table_target == 7)
+                    {
+                        Serial.printf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaatable_target = %d\n", table_target);
+
+                        Modbus.task();
+                        Modbus.Hreg(HREG1_DATA_WRITE, 0);
+                    }
+                }
+                if (Row_Data_T1.out1State == "ON")
+                    digitalWrite(RELAY_5, HIGH);
+                else if (Row_Data_T1.out1State == "OFF")
+                    digitalWrite(RELAY_5, LOW);
+                if (Row_Data_T1.out2State == "ON")
+                    digitalWrite(RELAY_6, HIGH);
+                else if (Row_Data_T1.out2State == "OFF")
+                    digitalWrite(RELAY_6, LOW);
+                Write_HMI("out1", "pco", digitalRead(RELAY_5) ? 2016 : 63488);
+                Write_HMI("out1", "txt", String((digitalRead(RELAY_5) ? "ON" : "OFF")));
+                Write_HMI("out2", "pco", digitalRead(RELAY_6) ? 2016 : 63488);
+                Write_HMI("out2", "txt", String((digitalRead(RELAY_6) ? "ON" : "OFF")));
+            } while ((unsigned long)millis() - time_start_wait <= Row_Data_T1.waitTimeValue * 1000);
+            // Mark_Row(Row_Data_T1.rowNo, false);
+        }
+        else
+        {
+            // ENABLE_BUZZER(500);
+            // row_begin = 1;
+            // Write_HMI("pageno", "val", (unsigned int)((row_begin + 9) / 10));
+            // Update_Data_Table(row_begin, row_begin + 9);
+            Modbus.task();
+            Modbus.Hreg(HREG1_DATA_WRITE, 0);
+            break;
+        }
+        if (digitalRead(RED_BUTTON) == 0 && digitalRead(GREEN_BUTTON) == 0)
+            return;
+    }
+}
+void Check_Stop_Robot_TCP_Mode()
+{
+    bool EXIT = false;
+    Modbus.task();
+    Modbus.Hreg(HREG1_DATA_WRITE, 1);
+    delay(200);
+    do
+    {
+        Modbus.task();
+        Modbus.Hreg(HREG1_DATA_WRITE, 1);
+        Update_Data_HMI();
+        LINK_Led();
+        TCP_Led();
+        EXIT = (GET_SPEED_1() == 0 && GET_SPEED_2() == 0 && GET_SPEED_3() == 0 && GET_SPEED_4() == 0 && GET_SPEED_5() == 0 && GET_SPEED_6() == 0);
+    } while (!EXIT);
+    Modbus.task();
+    Modbus.Hreg(HREG1_DATA_WRITE, 0);
+}
+void TCPIP_Mode_Page()
+{
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("ETHC") != NULL_POS)
+    {
+        ETH_Connect = !ETH_Connect;
+        if (ETH_Connect && Ethernet.linkStatus() == LinkON)
+        {
+            Write_HMI("ethbt", "txt", "Disconnect");
+            ETH_Connect = true;
+        }
+        else
+        {
+            Write_HMI("ethbt", "txt", "Connect");
+            client.stop();
+            ETH_Connect = false;
+        }
+        clearBufferData();
+    }
+    if (ETH_Connect == true)
+    {
+        Modbus.task();
+        TCP_DATA = (int16_t)Modbus.Hreg(HREG2_DATA_READ);
+        Serial.printf("TCP Data Read: %d\n", TCP_DATA);
+        Write_HMI("ethst", "pco", 2016);
+        Write_HMI("ethst", "txt", "Connected!");
+        delay(10);
+        Modbus.task();
+        Modbus.Hreg(HREG1_DATA_WRITE, random(256));
+        // if (TCP_DATA == TCP_TASK_POS_1 && Run_Mark != TCP_TASK_POS_1) // POS1
+        // {
+        //     Run_Robot_TCP_Mode(5);
+        //     Run_Mark = TCP_TASK_POS_1;
+        // }
+        // else if (TCP_DATA == TCP_TASK_POS_2 && Run_Mark != TCP_TASK_POS_2) // POS2
+        // {
+        //     Run_Robot_TCP_Mode(6);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_POS_2;
+        // }
+        // else if (TCP_DATA == TCP_TASK_POS_3 && Run_Mark != TCP_TASK_POS_3) // POS3
+        // {
+        //     Run_Robot_TCP_Mode(7);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_POS_3;
+        // }
+        // else if (TCP_DATA == TCP_TASK_POS_4 && Run_Mark != TCP_TASK_POS_4) // POS4
+        // {
+        //     Move_Robot_Fixed_Modes(Fixed_Modes.Wakeup, 3);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_POS_4;
+        // }
+        // else if (TCP_DATA == TCP_TASK_POS_5 && Run_Mark != TCP_TASK_POS_5) // POS5
+        // {
+        //     Move_Robot_Fixed_Modes(Fixed_Modes.Wakeup, 3);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_POS_5;
+        // }
+        // else if (TCP_DATA == TCP_TASK_POS_6 && Run_Mark != TCP_TASK_POS_6) // POS6
+        // {
+        //     Move_Robot_Fixed_Modes(Fixed_Modes.Wakeup, 3);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_POS_6;
+        // }
+        // else if (TCP_DATA == TCP_TASK_POS_TG_1 && Run_Mark != TCP_TASK_POS_TG_1) // POS TG1
+        // {
+        //     Run_Robot_TCP_Mode(3);
+        //     Run_Mark = TCP_TASK_POS_TG_1;
+        // }
+        // else if (TCP_DATA == TCP_TASK_POS_TG_2 && Run_Mark != TCP_TASK_POS_TG_2) // POS TG2
+        // {
+        //     Run_Robot_TCP_Mode(4);
+        //     Run_Mark = TCP_TASK_POS_TG_2;
+        // }
+        // else if (TCP_DATA == TCP_TASK_HOME && Run_Mark != TCP_TASK_HOME) // HOME
+        // {
+        //     Move_Robot_Fixed_Modes(Fixed_Modes.Home, 3);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_HOME;
+        // }
+        // else if (TCP_DATA == TCP_TASK_CALIB && Run_Mark != TCP_TASK_CALIB) // CALIB
+        // {
+        //     Robot_Calibration();
+        //     Run_Mark = TCP_TASK_CALIB;
+        // }
+        // else if (TCP_DATA == TCP_TASK_WAKEUP && Run_Mark != TCP_TASK_WAKEUP) // WAKEUP
+        // {
+        //     Move_Robot_Fixed_Modes(Fixed_Modes.Wakeup, 3);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_WAKEUP;
+        // }
+        // else if (TCP_DATA == TCP_TASK_SLEEP && Run_Mark != TCP_TASK_SLEEP) // SLEEP
+        // {
+        //     Move_Robot_Fixed_Modes(Fixed_Modes.Sleep, 3);
+        //     Check_Stop_Robot_TCP_Mode();
+        //     Run_Mark = TCP_TASK_SLEEP;
+        // }
+        // else if (TCP_DATA == TCP_TASK_ON_SERVO && Run_Mark != TCP_TASK_ON_SERVO) // ON
+        // {
+        //     ENABLE_ALL_SERVO();
+        //     Run_Mark = TCP_TASK_ON_SERVO;
+        // }
+        // else if (TCP_DATA == TCP_TASK_OFF_SERVO && Run_Mark != TCP_TASK_OFF_SERVO) // OFF
+        // {
+        //     DISABLE_ALL_SERVO();
+        //     Run_Mark = TCP_TASK_OFF_SERVO;
+        // }
+        // else if (TCP_DATA == TCP_TASK_STOP && Run_Mark != TCP_TASK_STOP) // STOP
+        // {
+        //     SERVO_MoveStop(ID_1);
+        //     SERVO_MoveStop(ID_2);
+        //     SERVO_MoveStop(ID_3);
+        //     SERVO_MoveStop(ID_4);
+        //     SERVO_MoveStop(ID_5);
+        //     SERVO_MoveStop(ID_6);
+        //     Run_Mark = TCP_TASK_STOP;
+        // }
+        TCP_Led();
+    }
+    else
+    {
+        Write_HMI("ethst", "pco", 63488);
+        Write_HMI("ethst", "txt", "Disconnected!");
+        Write_HMI("dled", "bco", 8518);
+    }
+    LINK_Led();
+    Write_HMI("mac", "txt", convertBytesToHexString(MAC_Address));
+    Write_HMI("ip", "txt", IP_Address.toString());
+    Write_HMI("gateway", "txt", Gateway_Address.toString());
+    Write_HMI("subnet", "txt", Subnet_Mask.toString());
+    Update_Data_HMI();
+}
+void Debug_Page()
+{
+    Read_HMI();
+    if (HMI_BUFFER_DATA.indexOf("HARDRESET") != NULL_POS)
+    {
+        Serial.println("RESETTING...");
+        CLEAR_ALL_POSITION();
+        ENABLE_BUZZER(400);
+        delay(400);
+        ENABLE_BUZZER(400);
+        delay(400);
+        ENABLE_BUZZER(400);
+        clearBufferData();
+    }
+    Write_HMI("hj1", "pco", digitalRead(HOME_SENSOR_J1) ? 2016 : 63488);
+    Write_HMI("hj1", "txt", String((digitalRead(HOME_SENSOR_J1) ? "HIGH" : "LOW")));
+    Write_HMI("hj2", "pco", (digitalRead(HOME_SENSOR_J2) ? 2016 : 63488));
+    Write_HMI("hj2", "txt", String((digitalRead(HOME_SENSOR_J2) ? "HIGH" : "LOW")));
+    Write_HMI("hj3", "pco", digitalRead(HOME_SENSOR_J3) ? 2016 : 63488);
+    Write_HMI("hj3", "txt", String((digitalRead(HOME_SENSOR_J3) ? "HIGH" : "LOW")));
+    Write_HMI("hj4", "pco", digitalRead(HOME_SENSOR_J4) ? 2016 : 63488);
+    Write_HMI("hj4", "txt", String((digitalRead(HOME_SENSOR_J4) ? "HIGH" : "LOW")));
+    Write_HMI("hj5", "pco", digitalRead(HOME_SENSOR_J5) ? 2016 : 63488);
+    Write_HMI("hj5", "txt", String((digitalRead(HOME_SENSOR_J5) ? "HIGH" : "LOW")));
+    Write_HMI("hj6", "pco", digitalRead(HOME_SENSOR_J6) ? 2016 : 63488);
+    Write_HMI("hj6", "txt", String((digitalRead(HOME_SENSOR_J6) ? "HIGH" : "LOW")));
+    Write_HMI("out1", "pco", digitalRead(RELAY_5) ? 2016 : 63488);
+    Write_HMI("out1", "txt", String((digitalRead(RELAY_5) ? "ON" : "OFF")));
+    Write_HMI("out2", "pco", digitalRead(RELAY_6) ? 2016 : 63488);
+    Write_HMI("out2", "txt", String((digitalRead(RELAY_6) ? "ON" : "OFF")));
+}
+void Update_Current_Page_Fcns()
+{
+    while (CURRENT_PAGE == "HP")
+    {
+        // Update_System_Status();
+        // Serial.println("This is the Home Page !");
+        Home_Page();
+
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "KI_SLI")
+    {
+        // Update_System_Status();
+        // Serial.println("This is the KI_SLI Page !");
+        Kinematic_Slider_Mode_Page();
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "KI_ENC")
+    {
+        // Serial.println("This is the KI_ENC Page !");
+        Kinematic_Encoder_Mode_Page();
+        // Serial.printf("H1: %d, H2: %d, H3: %d, H4: %d, H5: %d, H6: %d\n",
+        //               digitalRead(HOME_SENSOR_J1), digitalRead(HOME_SENSOR_J2), digitalRead(HOME_SENSOR_J3), digitalRead(HOME_SENSOR_J4), digitalRead(HOME_SENSOR_J5), digitalRead(HOME_SENSOR_J6));
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "EEOP")
+    {
+        // Serial.println("This is the Select EE Ori Page !");
+        Select_EE_Orientation_Page();
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "BP")
+    {
+        // Update_System_Status();
+        //  Serial.println("This is the Base Mode Page !");
+        Base_Mode_Page();
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "PP")
+    {
+        // Serial.println("This is the Position Table Page !");
+        Position_Table_Page();
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "EP")
+    {
+        // Serial.println("This is the TCP IP Page !");
+        TCPIP_Mode_Page();
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "AP")
+    {
+        // Serial.println("This is the About Page !");
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+    while (CURRENT_PAGE == "DEBUG")
+    {
+        // Serial.println("This is the Debug Page !");
+        Debug_Page();
+        Read_HMI();
+        Check_Change_Page_Fcns();
+    }
+}
+void SET_ALL_POS_INIT(float theta1_init, float theta2_init, float theta3_init, float theta4_init, float theta5_init, float theta6_init)
+{
+    SERVO_SetActualPos(ID_1, DEG_TO_POS_1_CONV(theta1_init));
+    SERVO_SetActualPos(ID_2, DEG_TO_POS_2_CONV(theta2_init));
+    SERVO_SetActualPos(ID_3, DEG_TO_POS_3_CONV(theta3_init));
+    SERVO_SetActualPos(ID_4, DEG_TO_POS_4_CONV(theta4_init));
+    SERVO_SetActualPos(ID_5, DEG_TO_POS_5_CONV(theta5_init));
+    SERVO_SetActualPos(ID_6, DEG_TO_POS_6_CONV(theta6_init));
+}
+void Initialization_Fcns()
+{
+    // digitalWrite(RELAY_5, HIGH);
+    // digitalWrite(RELAY_6, LOW);
+    // delay(500);
+    // digitalWrite(RELAY_5, LOW);
+    // digitalWrite(RELAY_6, HIGH);
+    // delay(500);
+    //   digitalWrite(RELAY_5, LOW);
+    // digitalWrite(RELAY_6, LOW);
+    //   delay(500);
+    // digitalWrite(RELAY_5, HIGH);
+    // digitalWrite(RELAY_6, HIGH);
+    // delay(500);
+    // digitalWrite(RELAY_5, LOW);
+    // digitalWrite(RELAY_6, LOW);
+    //   delay(500);
+    // digitalWrite(BUZZER, HIGH);
+    // delay(300);
+    // digitalWrite(BUZZER, LOW);
+    // delay(300);
+    // digitalWrite(BUZZER, HIGH);
+    // delay(300);
+    // digitalWrite(BUZZER, LOW);
+    // delay(300);
+    digitalWrite(RELAY_5, LOW);
+    digitalWrite(RELAY_6, LOW);
+    FK_Jog << 0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0;
+    R_0_6_Temp << 0, 0, 0,
+        0, 0, 0,
+        0, 0, 0;
+    EE_Target_Matrix << 0, 0, 0;
+    String Theta_Init = readFile(SD, "/LAST_THETA.txt");
+    Serial.printf("LAST_THETA: %s\n", Theta_Init.c_str());
+    theta1_Init = splitString(Theta_Init, ";", 1).toFloat();
+    theta2_Init = splitString(Theta_Init, ";", 2).toFloat();
+    theta3_Init = splitString(Theta_Init, ";", 3).toFloat();
+    theta4_Init = splitString(Theta_Init, ";", 4).toFloat();
+    theta5_Init = splitString(Theta_Init, ";", 5).toFloat();
+    theta6_Init = splitString(Theta_Init, ";", 6).toFloat();
+    SET_ALL_POS_INIT(theta1_Init, theta2_Init, theta3_Init, theta4_Init, theta5_Init, theta6_Init);
+}
+void setup()
+{
+    /*========== SETUP PINMODE ==========*/
+    pinMode(BUZZER, OUTPUT);
+    pinMode(RELAY_5, OUTPUT);
+    pinMode(RELAY_6, OUTPUT);
+    pinMode(BUZZER, OUTPUT);
+    pinMode(cs, OUTPUT);
+    pinMode(cs_ethernet, OUTPUT);
+    pinMode(RED_BUTTON, INPUT);
+    pinMode(GREEN_BUTTON, INPUT);
+    pinMode(HOME_SENSOR_J1, INPUT);
+    pinMode(HOME_SENSOR_J2, INPUT);
+    pinMode(HOME_SENSOR_J3, INPUT);
+    pinMode(HOME_SENSOR_J4, INPUT);
+    pinMode(HOME_SENSOR_J5, INPUT);
+    pinMode(HOME_SENSOR_J6, INPUT);
+
+/*========== REASSIGN PINS FOR VSPI ==========*/
+#ifdef REASSIGN_PINS
+    SPI.begin(sck, miso, mosi, cs_ethernet);
+#endif
+
+    /*========== INIT SPI FOR SD CARD ==========*/
+    if (!SD.begin(cs))
+    {
+        Serial.println("Card Mount Failed");
+        return;
+    }
+    SPI_SD_Init_Fcn();
+
+    /*========== INIT SERIAL ==========*/
+    Serial.begin(115200);
+    Serial2.begin(460800, SERIAL_8N1, RXD2, TXD2);
+    HMI.begin(115200, SERIAL_8N1, RXD1, TXD1);
+    // attachInterrupt(digitalPinToInterrupt(RXD1), HANDLE_UART_INTERRUPT, CHANGE);
+
+    /*========== INIT ENCODER ==========*/
+    Teach_Pendant_Encoder.attachHalfQuad(DT_ENCODER, CLK_ENCODER);
+    Teach_Pendant_Encoder.setCount(0);
+    /*========== OTHER INIT FCNS==========*/
+    Initialization_Fcns();
+
+    /*========== MODBUS ==========*/
+    Ethernet.init(cs_ethernet);
+    Modbus.config(MAC_Address, IP_Address, DNS_Address, Gateway_Address, Subnet_Mask);
+
+    Modbus.addHreg(HREG1_DATA_WRITE, 0);
+    Modbus.addHreg(HREG2_DATA_READ, 0);
+}
+void loop()
+{
+
+    // writeFile(SD, "/hi robot.txt", "hi 6dof arm robot !");
+    // writeFile(SD, "/hi.txt", "hiiiiiiiiiii hoooooooo");
+    // String data1 = readFile(SD, "/hi robot.txt");
+    // String data2 = readFile(SD, "/hi.txt");
+    // Serial.printf("data1: %s\n", data1.c_str());
+    // Serial.printf("data2: %s\n", data2.c_str());
+    // Serial.print("RED_BUTTON: ");
+    // Serial.print(digitalRead(RED_BUTTON));
+    // Serial.print(", GREEN_BUTTON: ");
+    // Serial.println(digitalRead(GREEN_BUTTON));
+    // digitalWrite(BUZZER, HIGH);
+    // delay(100);
+    // digitalWrite(BUZZER, LOW);
+    // delay(100);
+
+    Check_Change_Page_Fcns();
+    Update_Current_Page_Fcns();
+    Modbus.task();
+}

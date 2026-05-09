@@ -1,0 +1,140 @@
+#include <Arduino.h>
+#include <ArduinoEigenDense.h>
+#include <math.h>
+#include <../FORWARD_KINEMATIC/Convert_Function.h>
+
+float d0 = 228, L1 = 55, L2 = 330, L3 = 62, d1 = 330, d2 = 201;
+float POS = 90, NEG = -90;
+float theta1 = 0, theta2 = 0, theta3 = 0, theta4 = 0, theta5 = 0, theta6 = 0;
+template <int rows, int cols>
+using MatrixSize = Eigen::Matrix<float, rows, cols>;
+
+// Sử dụng định danh kiểu dữ liệu cho ma trận tùy chỉnh
+MatrixSize<4, 4> T_0_6;
+// MatrixSize<4, 4> T_1_2;
+// MatrixSize<4, 4> T_2_3;
+// MatrixSize<4, 4> T_3_4;
+// MatrixSize<4, 4> T_4_5;
+// MatrixSize<4, 4> T_5_6;
+
+MatrixSize<4, 4> T_0_1(float a1, float alpha1, float d1, float theta1)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << 
+      cosd(theta1), 0, sind(theta1), a1 * cosd(theta1),
+      sind(theta1), 0, -cosd(theta1), a1 * sind(theta1),
+      0, 1, 0, d1,
+      0, 0, 0, 1;
+
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_1_2(float a2, float alpha2, float d2, float theta2)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << 
+      cosd(theta2), -sind(theta2), 0, a2 * cosd(theta2),
+      sind(theta2), cosd(theta2), 0, a2 * sind(theta2),
+      0, 0, 1, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_2_3(float a3, float alpha3, float d3, float theta3)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << 
+      cosd(theta3), 0, sind(theta3), a3 * cosd(theta3),
+      sind(theta3), 0, -cosd(theta3), a3 * sind(theta3),
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_3_4(float a4, float alpha4, float d4, float theta4)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << 
+      cosd(theta4), 0, -sind(theta4), 0,
+      sind(theta4), 0, cosd(theta4), 0,
+      0, -1, 0, d4,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_4_5(float a5, float alpha5, float d5, float theta5)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << 
+      cosd(theta5), 0, sind(theta5), 0,
+      sind(theta5), 0, -cosd(theta5), 0,
+      0, 1, 0, 0,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+MatrixSize<4, 4> T_5_6(float a6, float alpha6, float d6, float theta6)
+{
+  MatrixSize<4, 4> transformationMatrix;
+  // Thực hiện tính toán ma trận chuyển đổi và gán giá trị cho transformationMatrix
+  transformationMatrix << 
+      cosd(theta6), -sind(theta6), 0, 0,
+      sind(theta6), cosd(theta6), 0, 0,
+      0, 0, 1, d6,
+      0, 0, 0, 1;
+  return transformationMatrix;
+}
+
+// Hàm in ma trận ra Serial Monitor
+template <int rows, int cols>
+void printMatrix(const MatrixSize<rows, cols> &matrix)
+{
+  for (int i = 0; i < rows; ++i)
+  {
+    for (int j = 0; j < cols; ++j)
+    {
+      Serial.print(matrix(i, j), 2);
+      Serial.print('\t'); // Để tạo khoảng cách giữa các phần tử
+    }
+    Serial.println(); // Xuống dòng khi đã hoàn thành một hàng
+  }
+}
+
+void setup()
+{
+  Serial.begin(9600);
+
+  // // Khởi tạo các ma trận
+  // matrixA << 1, 2, 3, 4,
+  //            5, 6, 7, 8,
+  //            9, 10, 11, 12,
+  //            13, 14, 15, 16;
+
+  // matrixB << 17, 18, 19, 20,
+  //            21, 22, 23, 24,
+  //            25, 26, 27, 28,
+  //            29, 30, 31, 32;
+
+  // // Thực hiện phép nhân ma trận
+  // resultMatrix = matrixA * matrixB;
+
+  // In ma trận kết quả ra Serial Monitor
+ // Serial.println("Result Matrix:");
+  // printMatrix(resultMatrix);
+}
+
+void loop()
+{
+  // Chương trình chính không cần loop
+T_0_6 = T_0_1(L1, POS, d0, theta1)*T_1_2(L2, 0, 0, theta2)*T_2_3(L3, POS, d0, theta3)*T_3_4(0, NEG, d1, theta4)*T_4_5(0, POS, 0, theta5)*T_5_6(0, 0, d2, theta6);
+Serial.println("Result T_0_6:");
+printMatrix(T_0_6);
+Serial.println();
+delay(3000);
+
+}

@@ -25,20 +25,8 @@
 #include <vector>
 
 namespace {
-constexpr const char* kUsbCameraDevice = "/dev/video0";
-constexpr const char* kDefaultModelPath = "AI_predict/best.onnx";
-constexpr const char* kPythonExecutable = "python3";
-constexpr const char* kLineMappingOutputDir = "line_mapping_outputs";
-constexpr const char* kDefaultMappedFileName = "test_line_mapped.txt";
-// constexpr const char* kPythonMainPath =
-//     "/mnt/c/MySpace/Study/Graduation/Source/6-Dof-robot-arm-simulation-main/Kinematics/main.py";
-constexpr const char* kPythonMainPath = "./Kinematic/main.py";
-constexpr const char* kHardcodedInputPath = "./file_test/test.txt";
-// constexpr const char* kHardcodedInputPath =
-//     "/mnt/c/Users/Lenovo/Downloads/test.txt";
-
-QString resolveModelPath() {
-    const QString relativePath = QString::fromUtf8(kDefaultModelPath);
+QString resolveModelPath(const AppConfig& config) {
+    const QString relativePath = config.modelPath;
     const QStringList candidates = {
         QDir::current().absoluteFilePath(relativePath),
         QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(relativePath),
@@ -55,9 +43,9 @@ QString resolveModelPath() {
     return QString();
 }
 
-QString resolveLineMappedPath() {
-    const QString outputDir = QString::fromUtf8(kLineMappingOutputDir);
-    const QString mappedFile = QString::fromUtf8(kDefaultMappedFileName);
+QString resolveLineMappedPath(const AppConfig& config) {
+    const QString outputDir = config.lineMappingOutputDir;
+    const QString mappedFile = config.defaultMappedFileName;
     const QStringList dirCandidates = {
         QDir::current().absoluteFilePath(outputDir),
         QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(outputDir),
@@ -88,12 +76,13 @@ QString resolveLineMappedPath() {
 }
 }
 
-MainWindow::MainWindow(QWidget* parent) : QWidget(parent) {
+MainWindow::MainWindow(QWidget* parent) : QWidget(parent), config_(loadAppConfig()) {
     buildUi();
 
     coutRedirect_ = std::make_unique<StreamRedirect>(log_, std::cout);
     cerrRedirect_ = std::make_unique<StreamRedirect>(log_, std::cerr);
 
+    logLine("Loaded path config: " + config_.configPath);
     controller_.initializeSystem();
     connectSignals();
 }
@@ -314,12 +303,12 @@ void MainWindow::logDetections(const std::vector<Detection>& detections) {
 }
 
 void MainWindow::refreshFileModePath() {
-    const QString mappedPath = resolveLineMappedPath();
+    const QString mappedPath = resolveLineMappedPath(config_);
     if (mappedPath.isEmpty()) {
         controller_.setFileName("");
         filePathEdit_->clear();
         logLine(QString("FILE mode failed: no mapped file found in %1")
-                    .arg(QString::fromUtf8(kLineMappingOutputDir)));
+                    .arg(config_.lineMappingOutputDir));
         return;
     }
 
@@ -333,24 +322,25 @@ void MainWindow::startUsbCamera() {
         return;
     }
 
-    const QFileInfo camDev(QString::fromUtf8(kUsbCameraDevice));
+    const QFileInfo camDev(config_.usbCameraDevice);
     if (!camDev.exists()) {
-        logLine("Camera device not found: /dev/video0");
+        logLine("Camera device not found: " + config_.usbCameraDevice);
         return;
     }
     if (!camDev.isReadable()) {
-        logLine("Camera device is not readable: /dev/video0");
+        logLine("Camera device is not readable: " + config_.usbCameraDevice);
         return;
     }
 
-    if (!camera_.openDevice(kUsbCameraDevice, 640, 480)) {
-        logLine(QString("Cannot open USB camera: /dev/video0 (%1)")
+    if (!camera_.openDevice(config_.usbCameraDevice.toStdString(), 640, 480)) {
+        logLine(QString("Cannot open USB camera: %1 (%2)")
+                    .arg(config_.usbCameraDevice)
                     .arg(QString::fromStdString(camera_.lastError())));
         return;
     }
 
     if (!detectorReady_) {
-        const QString modelPath = resolveModelPath();
+        const QString modelPath = resolveModelPath(config_);
         if (!modelPath.isEmpty()) {
             if (detector_.loadModel(modelPath.toStdString())) {
                 detectorReady_ = true;
@@ -361,7 +351,7 @@ void MainWindow::startUsbCamera() {
             }
         } else {
             logLine(QString("AI model not found: %1 (camera will run preview-only)")
-                        .arg(QString::fromUtf8(kDefaultModelPath)));
+                        .arg(config_.modelPath));
         }
     }
 
@@ -370,7 +360,8 @@ void MainWindow::startUsbCamera() {
     detectorFailCount_ = 0;
     detectorNoDetectionCount_ = 0;
     cameraTimer_->start();
-    logLine(QString("USB camera started: /dev/video0 (format %1)")
+    logLine(QString("USB camera started: %1 (format %2)")
+                .arg(config_.usbCameraDevice)
                 .arg(QString::fromStdString(camera_.formatName())));
 }
 
@@ -394,7 +385,8 @@ void MainWindow::updateCameraFrame() {
     if (!camera_.readFrameBgr(frameBgr)) {
         ++cameraFrameFailCount_;
         if (cameraFrameFailCount_ == 30) {
-            logLine(QString("Camera opened but no frame received from /dev/video0 (%1)")
+            logLine(QString("Camera opened but no frame received from %1 (%2)")
+                        .arg(config_.usbCameraDevice)
                         .arg(QString::fromStdString(camera_.lastError())));
             stopUsbCamera();
             logLine("Camera stopped after repeated frame failures.");
@@ -434,21 +426,21 @@ void MainWindow::updateCameraFrame() {
 }
 
 void MainWindow::triggerPythonLineMap() {
-    const QString linuxPath = QString::fromUtf8(kHardcodedInputPath);
+    const QString linuxPath = config_.defaultInputPath;
     const QFileInfo inputFile(linuxPath);
     if (!inputFile.exists() || !inputFile.isFile()) {
         logLine("Done failed: input file does not exist: " + linuxPath);
         return;
     }
 
-    const QFileInfo pythonMain(QString::fromUtf8(kPythonMainPath));
+    const QFileInfo pythonMain(config_.pythonMainPath);
     if (!pythonMain.exists() || !pythonMain.isFile()) {
         logLine("Done failed: Python main.py not found: " + pythonMain.absoluteFilePath());
         return;
     }
 
     QProcess process;
-    process.setProgram(QString::fromUtf8(kPythonExecutable));
+    process.setProgram(config_.pythonExecutable);
     process.setArguments({pythonMain.absoluteFilePath(), "line-map", linuxPath});
     process.setProcessChannelMode(QProcess::MergedChannels);
 

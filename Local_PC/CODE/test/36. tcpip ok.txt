@@ -1,0 +1,51 @@
+#include <SPI.h>
+#include <Ethernet.h>
+#include "MgsModbus.h"
+// VSPI FOR ETHERNET MODULE AND SD CARD
+#define REASSIGN_PINS
+int sck = 18;
+int miso = 19;
+int mosi = 23;
+int cs = 14;           // Chip Select Pin for SD CARD
+int cs_ethernet = 13;  // Chip Select Pin for ETHERNET W5500
+MgsModbus Mb;
+byte MAC_Address[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress IP_Address(192, 168, 0, 20);
+IPAddress Gateway_Address(192, 168, 0, 10);
+IPAddress Subnet_Mask(255, 255, 255, 0);
+IPAddress DNS_Address = Gateway_Address;
+
+void setup() {
+  // put your setup code here, to run once:
+  pinMode(34, INPUT);
+  pinMode(33, OUTPUT);
+#ifdef REASSIGN_PINS
+  SPI.begin(sck, miso, mosi, cs_ethernet);
+#endif
+  Ethernet.init(cs_ethernet);
+  Ethernet.begin(MAC_Address, IP_Address, Gateway_Address, Subnet_Mask);
+  Mb.MbData[0] = 0;
+  Mb.MbData[1] = 0;
+  Mb.MbData[2] = 0;
+  Mb.MbData[3] = 0;
+  Mb.MbData[4] = 0;
+  Mb.MbData[5] = 0;
+  Mb.MbData[6] = 0;
+  Mb.MbData[7] = 0;
+  Mb.MbData[8] = 0;
+  Mb.MbData[9] = 0;
+  Mb.MbData[10] = 0;
+  Mb.MbData[11] = 0;
+  Serial.begin(9600);
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  Mb.MbData[0] = 100;
+
+  Serial.print("Mb.MbData[1] = ");
+  Serial.println(bitRead(Mb.MbData[1], 0));
+  
+  digitalWrite(33, bitRead(Mb.MbData[1], 0));
+  Mb.MbsRun();
+}

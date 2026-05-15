@@ -57,7 +57,7 @@ GUI_SRC   := source/GUI/tc_6axis_gui.cpp \
              source/GUI/gui_log_redirect.cpp \
              source/GUI/usb_camera.cpp \
              source/GUI/weld_detector.cpp \
-             source/axis_controller.cpp \
+             source/axis_controller_override.cpp \
              source/DriverConnection.cpp
 
 # ====== Tool Defaults ======

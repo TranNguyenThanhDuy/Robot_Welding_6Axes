@@ -1,5 +1,6 @@
 #include "axis_controller.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -7,6 +8,149 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <limits>
+
+namespace {
+constexpr auto kCommandSpacing = std::chrono::microseconds(1500);
+constexpr double kDefaultSegmentSeconds = 0.05;
+constexpr unsigned char kAccelerationTimeParameter = 3;
+constexpr unsigned char kDecelerationTimeParameter = 4;
+constexpr int kStreamingAccelTimeMs = 5;
+constexpr int kStreamingDecelTimeMs = 5;
+
+std::chrono::microseconds g_segment_period =
+    std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::duration<double>(kDefaultSegmentSeconds));
+
+std::string trimCopy(const std::string& value) {
+    const auto first = value.find_first_not_of(" \t\r\n#;");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+bool readTimingHeader(const std::string& line,
+                      double& segmentSeconds,
+                      double& moveTimeSeconds) {
+    std::string text = trimCopy(line);
+    const auto eq = text.find('=');
+    if (eq == std::string::npos) return false;
+
+    std::string key = trimCopy(text.substr(0, eq));
+    std::string val = trimCopy(text.substr(eq + 1));
+    std::transform(key.begin(), key.end(), key.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    try {
+        const double parsed = std::stod(val);
+        if (key == "segment_period_s" || key == "segment_seconds") {
+            segmentSeconds = parsed;
+            return true;
+        }
+        if (key == "segment_period_ms" || key == "segment_ms") {
+            segmentSeconds = parsed / 1000.0;
+            return true;
+        }
+        if (key == "segment_period_us" || key == "segment_us") {
+            segmentSeconds = parsed / 1000000.0;
+            return true;
+        }
+        if (key == "movetimevalue" || key == "move_time" || key == "move_time_s") {
+            moveTimeSeconds = parsed;
+            return true;
+        }
+    } catch (...) {
+        return false;
+    }
+
+    return false;
+}
+
+void setSegmentPeriodSeconds(double seconds) {
+    if (seconds <= 0.0) return;
+    g_segment_period = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::duration<double>(seconds));
+}
+
+AxisVelocities computeSegmentVelocities(const AxisPositions& current,
+                                        const AxisPositions& targets,
+                                        std::chrono::microseconds segmentPeriod) {
+    AxisVelocities velocities{};
+    velocities.fill(1);
+
+    double seconds = static_cast<double>(segmentPeriod.count()) / 1000000.0;
+    if (seconds <= 0.0) {
+        seconds = kDefaultSegmentSeconds;
+    }
+
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        const auto distance =
+            std::llabs(static_cast<long long>(targets[i]) - static_cast<long long>(current[i]));
+        if (distance == 0) {
+            velocities[i] = 1;
+            continue;
+        }
+
+        const double speed = std::ceil(static_cast<double>(distance) / seconds);
+        if (speed > static_cast<double>(std::numeric_limits<int>::max())) {
+            velocities[i] = std::numeric_limits<int>::max();
+        } else {
+            velocities[i] = std::max(1, static_cast<int>(speed));
+        }
+    }
+
+    return velocities;
+}
+
+bool setAllMotionTiming(const AxisPorts& ports,
+                        const AxisSlaves& slaves,
+                        unsigned char paramNo,
+                        int value,
+                        const char* label) {
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        const int ret = FAS_SetParameter(ports[i], slaves[i], paramNo, value);
+        if (ret != FMM_OK) {
+            std::cout << "Failed to set " << label << " for axis " << (i + 1)
+                      << ": " << ret << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool readAllMotionTiming(const AxisPorts& ports,
+                         const AxisSlaves& slaves,
+                         unsigned char paramNo,
+                         AxisPositions& values,
+                         const char* label) {
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        const int ret = FAS_GetParameter(ports[i], slaves[i], paramNo, &values[i]);
+        if (ret != FMM_OK) {
+            std::cout << "Failed to read " << label << " for axis " << (i + 1)
+                      << ": " << ret << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool restoreAllMotionTiming(const AxisPorts& ports,
+                            const AxisSlaves& slaves,
+                            unsigned char paramNo,
+                            const AxisPositions& values,
+                            const char* label) {
+    bool ok = true;
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        const int ret = FAS_SetParameter(ports[i], slaves[i], paramNo, values[i]);
+        if (ret != FMM_OK) {
+            std::cout << "Failed to restore " << label << " for axis " << (i + 1)
+                      << ": " << ret << std::endl;
+            ok = false;
+        }
+    }
+    return ok;
+}
+}
 //hihi
 //hihiiiiiii
 AxisController::AxisController() {
@@ -489,56 +633,59 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
     setOutputSignal(outAxis, outMask, true); 
     std::cout << "Welding Output ON." << std::endl;
 
-    AxisPositions previous{};
-    if (!readActualPositions(previous)) {
+    const auto command_window =
+        std::chrono::duration_cast<std::chrono::microseconds>(kCommandSpacing * AXIS_COUNT);
+    const auto segment_period_us = g_segment_period;
+    if (segment_period_us < command_window) {
+        std::cout << "Segment period is shorter than command window. Requested "
+                  << segment_period_us.count() << " us, minimum command window "
+                  << command_window.count() << " us." << std::endl;
         setOutputSignal(outAxis, outMask, false);
         return false;
     }
+    std::cout << "Segment period: " << segment_period_us.count()
+              << " us, command window: " << command_window.count() << " us." << std::endl;
 
-    auto waitAllStopped = [&]() -> bool {
-        AxisStatuses st{};
-        while (true) {
-            bool done = true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            for (size_t a = 0; a < AXIS_COUNT; ++a) {
-                if (FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &st[a].dwValue) != FMM_OK) {
-                    std::cout << axisName(a) << " status read failed while waiting." << std::endl;
-                    return false;
-                }
-                done &= !st[a].FFLAG_MOTIONING;
-            }
-            if (done) return true;
+    AxisPositions savedAccel{};
+    AxisPositions savedDecel{};
+    bool timingSaved =
+        readAllMotionTiming(nPortIDs_, iSlaveNos_, kAccelerationTimeParameter, savedAccel, "accel time") &&
+        readAllMotionTiming(nPortIDs_, iSlaveNos_, kDecelerationTimeParameter, savedDecel, "decel time");
+    if (!setAllMotionTiming(nPortIDs_, iSlaveNos_, kAccelerationTimeParameter,
+                            kStreamingAccelTimeMs, "streaming accel time") ||
+        !setAllMotionTiming(nPortIDs_, iSlaveNos_, kDecelerationTimeParameter,
+                            kStreamingDecelTimeMs, "streaming decel time")) {
+        setOutputSignal(outAxis, outMask, false);
+        if (timingSaved) {
+            restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kAccelerationTimeParameter, savedAccel, "accel time");
+            restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kDecelerationTimeParameter, savedDecel, "decel time");
         }
+        return false;
+    }
+
+    auto finishRun = [&](bool ok) {
+        if (timingSaved) {
+            restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kAccelerationTimeParameter, savedAccel, "accel time");
+            restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kDecelerationTimeParameter, savedDecel, "decel time");
+        }
+        setOutputSignal(outAxis, outMask, false);
+        if (ok) {
+            std::cout << "Welding Output OFF. GO finished." << std::endl;
+        }
+        return ok;
     };
 
-    auto moveSingleAxisFallback = [&](const AxisPositions& target,
-                                      const AxisBools& hasCommand) -> bool {
-        AxisVelocities velocities = computeVelocities(previous, target, hasCommand);
-        for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            if (!hasCommand[a]) continue;
-            int ret = FAS_MoveSingleAxisAbsPos(
-                nPortIDs_[a],
-                iSlaveNos_[a],
-                target[a],
-                velocities[a]);
-            if (ret == FMP_RUNFAIL) {
-                if (!waitAllStopped()) return false;
-                ret = FAS_MoveSingleAxisAbsPos(
-                    nPortIDs_[a],
-                    iSlaveNos_[a],
-                    target[a],
-                    velocities[a]);
-            }
-            if (ret != FMM_OK) {
-                std::cout << axisName(a) << " fallback move failed: " << ret << std::endl;
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::microseconds(1500));
-        }
-        return waitAllStopped();
-    };
+    AxisPositions previous{};
+    if (!readActualPositions(previous)) {
+        return finishRun(false);
+    }
+
+    AxisBools axisStreamingStarted{};
+    axisStreamingStarted.fill(false);
 
     for (size_t i = 0; i < steps; ++i) {
+        const auto segmentStart = std::chrono::steady_clock::now();
+        auto nextCommandTime = segmentStart;
         AxisPositions target{};
         AxisBools hasCommand{};
 
@@ -547,69 +694,102 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
             hasCommand[a] = (target[a] != previous[a]);
         }
 
-        std::array<unsigned char, AXIS_COUNT> slaves{};
-        std::array<int, AXIS_COUNT> absPos{};
-        unsigned char slaveCount = 0;
+        AxisVelocities velocities = computeSegmentVelocities(previous, target, segment_period_us);
+
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            if (!hasCommand[a]) continue;
-            slaves[slaveCount] = iSlaveNos_[a];
-            absPos[slaveCount] = target[a];
-            ++slaveCount;
-        }
-
-        if (slaveCount == 0) {
-            continue;
-        }
-
-        constexpr unsigned int linear_feedrate = 1000;
-        constexpr unsigned short linear_accel_time_ms = 200;
-        int ret = FMM_OK;
-        if (slaveCount >= 2) {
-            ret = FAS_MoveLinearAbsPos2(
-                nPortIDs_[0],
-                slaveCount,
-                slaves.data(),
-                absPos.data(),
-                linear_feedrate,
-                linear_accel_time_ms);
-            if (ret == FMP_PACKETERROR || ret == FMP_DATAERROR) {
-                std::cout << "FAS_MoveLinearAbsPos2 returned " << ret
-                          << ". Retrying with FAS_MoveLinearAbsPos." << std::endl;
-                ret = FAS_MoveLinearAbsPos(
-                    nPortIDs_[0],
-                    slaveCount,
-                    slaves.data(),
-                    absPos.data(),
-                    linear_feedrate,
-                    linear_accel_time_ms);
+            if (!hasCommand[a]) {
+                continue;
             }
-        } else {
-            ret = FMP_PACKETERROR;
-        }
-        if (ret != FMM_OK) {
-            std::cout << "Linear move failed: " << ret
-                      << ". Falling back to synchronized single-axis commands."
-                      << std::endl;
-            if (!moveSingleAxisFallback(target, hasCommand)) {
-                setOutputSignal(outAxis, outMask, false);
-                return false;
+            const auto now = std::chrono::steady_clock::now();
+            if (now < nextCommandTime) {
+                std::this_thread::sleep_until(nextCommandTime);
             }
-            previous = target;
-            continue;
+#ifdef AXIS_CONTROLLER_OVERRIDE_MODE
+            if (!axisStreamingStarted[a]) {
+                const int startRet = FAS_MoveSingleAxisAbsPos(
+                    nPortIDs_[a],
+                    iSlaveNos_[a],
+                    target[a],
+                    velocities[a]);
+                if (startRet == FMM_OK) {
+                    axisStreamingStarted[a] = true;
+                    nextCommandTime += kCommandSpacing;
+                    continue;
+                }
+                if (startRet != FMP_RUNFAIL) {
+                    std::cout << axisName(a) << " initial streaming move failed: "
+                              << startRet << std::endl;
+                    return finishRun(false);
+                }
+                axisStreamingStarted[a] = true;
+            }
+
+            const int velRet = FAS_VelocityOverride(nPortIDs_[a], iSlaveNos_[a], velocities[a]);
+            const int posRet = FAS_PositionAbsOverride(nPortIDs_[a], iSlaveNos_[a], target[a]);
+            if (velRet != FMM_OK || posRet != FMM_OK) {
+                const int startRet = FAS_MoveSingleAxisAbsPos(
+                    nPortIDs_[a],
+                    iSlaveNos_[a],
+                    target[a],
+                    velocities[a]);
+                if (startRet != FMM_OK && startRet != FMP_RUNFAIL) {
+                    std::cout << axisName(a)
+                              << " override failed. vel=" << velRet
+                              << ", pos=" << posRet
+                              << ", restart=" << startRet << std::endl;
+                    return finishRun(false);
+                }
+            }
+            nextCommandTime += kCommandSpacing;
+#else
+            int ret = FAS_MoveSingleAxisAbsPos(
+                nPortIDs_[a],
+                iSlaveNos_[a],
+                target[a],
+                velocities[a]);
+            if (ret == FMP_RUNFAIL) {
+                const int velRet = FAS_VelocityOverride(nPortIDs_[a], iSlaveNos_[a], velocities[a]);
+                const int posRet = FAS_PositionAbsOverride(nPortIDs_[a], iSlaveNos_[a], target[a]);
+                if (velRet != FMM_OK || posRet != FMM_OK) {
+                    std::cout << axisName(a)
+                              << " streaming override failed. vel=" << velRet
+                              << ", pos=" << posRet << std::endl;
+                    return finishRun(false);
+                }
+                nextCommandTime += kCommandSpacing;
+                continue;
+            }
+            if (ret != FMM_OK) {
+                std::cout << axisName(a) << " streaming move failed: " << ret << std::endl;
+                return finishRun(false);
+            }
+            nextCommandTime += kCommandSpacing;
+#endif
         }
 
-        if (!waitAllStopped()) {
-            setOutputSignal(outAxis, outMask, false);
-            return false;
-        }
         previous = target;
+        if (i + 1 < steps) {
+            const auto nextSegmentTime = segmentStart + segment_period_us;
+            const auto now = std::chrono::steady_clock::now();
+            if (now < nextSegmentTime) {
+                std::this_thread::sleep_until(nextSegmentTime);
+            }
+        }
+    }
+
+    AxisStatuses st{};
+    while (true) {
+        bool done = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+            FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &st[a].dwValue);
+            done &= !st[a].FFLAG_MOTIONING;
+        }
+        if (done) break;
     }
 
     // --- TẮT MỎ HÀN ---
-    setOutputSignal(outAxis, outMask, false); 
-    std::cout << "Welding Output OFF. GO finished." << std::endl;
-
-    return true;
+    return finishRun(true);
 }
 
 bool AxisController::goFromFile(const std::string& filename)
@@ -624,10 +804,19 @@ bool AxisController::goFromFile(const std::string& filename)
     // Lưu tạm vào buffer theo dạng mảng các dòng (array of rows)
     std::vector<AxisPositions> pathBuffer; 
     std::string line;
+    double fileSegmentSeconds = -1.0;
+    double fileMoveTimeSeconds = -1.0;
 
     while (std::getline(file, line))
     {
         if (line.empty()) continue;
+        const auto firstNonSpace = line.find_first_not_of(" \t\r\n");
+        if (firstNonSpace == std::string::npos) continue;
+        const char first = line[firstNonSpace];
+        if (first == '#' || first == ';') {
+            readTimingHeader(line, fileSegmentSeconds, fileMoveTimeSeconds);
+            continue;
+        }
 
         std::stringstream ss(line);
         AxisPositions pos{};
@@ -643,6 +832,22 @@ bool AxisController::goFromFile(const std::string& filename)
         
         // Lưu vào mảng 1 chiều chứa các dòng
         pathBuffer.push_back(pos);
+    }
+
+    if (fileSegmentSeconds > 0.0) {
+        setSegmentPeriodSeconds(fileSegmentSeconds);
+        std::cout << "Segment timing from file header: "
+                  << fileSegmentSeconds << " s/step." << std::endl;
+    } else if (fileMoveTimeSeconds > 0.0 && pathBuffer.size() > 1) {
+        const double segmentSeconds =
+            fileMoveTimeSeconds / static_cast<double>(pathBuffer.size() - 1);
+        setSegmentPeriodSeconds(segmentSeconds);
+        std::cout << "Segment timing from moveTimeValue/Total_Index: "
+                  << segmentSeconds << " s/step." << std::endl;
+    } else {
+        setSegmentPeriodSeconds(kDefaultSegmentSeconds);
+        std::cout << "No segment timing header. Using default "
+                  << kDefaultSegmentSeconds << " s/step." << std::endl;
     }
 
     // --- PHẦN BẠN ĐANG THIẾU: Chuyển đổi và gọi hàm ---

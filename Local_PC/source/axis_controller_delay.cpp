@@ -525,6 +525,13 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
                 iSlaveNos_[a],
                 target[a],
                 velocities[a]);
+            if (ret == FMP_RUNFAIL) {
+                std::cout << axisName(a)
+                          << " streaming move returned 133. Ignoring and continuing."
+                          << std::endl;
+                std::this_thread::sleep_for(command_spacing);
+                continue;
+            }
             if (ret != FMM_OK) {
                 std::cout << axisName(a) << " streaming move failed: " << ret << std::endl;
                 setOutputSignal(outAxis, outMask, false);

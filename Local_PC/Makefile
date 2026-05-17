@@ -57,8 +57,10 @@ GUI_SRC   := source/GUI/tc_6axis_gui.cpp \
              source/GUI/gui_log_redirect.cpp \
              source/GUI/usb_camera.cpp \
              source/GUI/weld_detector.cpp \
-             source/axis_controller_override.cpp \
-             source/DriverConnection.cpp
+             source/DriverConnection.cpp \
+             source/17_5/axis_controller_trajectory.cpp \
+             source/17_5/trajectory_file.cpp \
+             source/17_5/trajectory_planner.cpp
 
 # ====== Tool Defaults ======
 CROSS_COMPILE ?= aarch64-linux-gnu-

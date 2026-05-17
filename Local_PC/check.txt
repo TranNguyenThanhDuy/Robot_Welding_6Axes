@@ -1,0 +1,40 @@
+*** SW Info***
+****FOLLOW THEO TẤM HÌNH NẾU ĐÉO MUỐN GÃY RĂNG****
+***DÙNG LUÔN FILE MAPPED SẴN TRONG NÀY CŨNG ĐƯỢC***
+
+
+**axis_controller: đi đúng nhưng giật (do đi xong stop ròi mới start lại)
+**axis_controller_delay: đi không đúng (reason not clear)
+**axis_controller_override / axis_controller_segment (override được base trên segment chỉ sửa param)(đi mượt nhưng sai)(reason not clear)
+**axis_controller_override_fix: NEED TO TEST
+**axis_controller_ad: NEED TO TEST
+**axis_controller_lookahead: NEED TO TEST
+**axis_controller_lookahead_vip: NEED TO TEST
+**axis_controller_jerk: NEED TO TEST
+**axis_controller_trajectory: NEED TO TEST
+Build SW này thì thay cái SW cũ thành
+            source/17_5/axis_controller_trajectory.cpp \
+            source/17_5/trajectory_file.cpp \
+            source/17_5/trajectory_planner.cpp 
+ví dụ: 
+Bình thường:
+GUI_SRC   := source/GUI/tc_6axis_gui.cpp \
+             source/GUI/app_config.cpp \
+             source/GUI/main_window.cpp \
+             source/GUI/gui_log_redirect.cpp \
+             source/GUI/usb_camera.cpp \
+             source/GUI/weld_detector.cpp \
+             source/DriverConnection.cpp \
+             source/axis_controller_override_fix.cpp
+Với SW này:
+GUI_SRC   := source/GUI/tc_6axis_gui.cpp \
+             source/GUI/app_config.cpp \
+             source/GUI/main_window.cpp \
+             source/GUI/gui_log_redirect.cpp \
+             source/GUI/usb_camera.cpp \
+             source/GUI/weld_detector.cpp \
+             source/DriverConnection.cpp \
+             source/17_5/axis_controller_trajectory.cpp \
+             source/17_5/trajectory_file.cpp \
+             source/17_5/trajectory_planner.cpp
+

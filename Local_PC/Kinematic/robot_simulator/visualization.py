@@ -1,7 +1,15 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from itertools import product
 
-from .constants import THETA2_OFFSET
+from .constants import (
+    THETA2_OFFSET,
+    WORKSPACE_FIXED_ANGLES,
+    WORKSPACE_POINT_SIZE,
+    WORKSPACE_SAMPLED_JOINTS,
+    WORKSPACE_SAMPLES_PER_JOINT,
+)
+from .conversions import get_joint_angle_limits
 from .kinematics import Forward_Kinematics, forward_points
 
 
@@ -92,3 +100,97 @@ def sample_trace_positions(q_start, q_end, num_samples=25):
         T06 = Forward_Kinematics(q[0], q[1] + THETA2_OFFSET, q[2], q[3], q[4], q[5])
         positions.append(T06[:3, 3].copy())
     return positions
+
+
+def generate_workspace_points(
+    samples_per_joint=WORKSPACE_SAMPLES_PER_JOINT,
+    joint_limits=None,
+    sampled_joint_indices=WORKSPACE_SAMPLED_JOINTS,
+    fixed_angles=WORKSPACE_FIXED_ANGLES,
+):
+    samples_per_joint = int(samples_per_joint)
+    if samples_per_joint < 2:
+        raise ValueError("samples_per_joint must be at least 2.")
+
+    limits = get_joint_angle_limits() if joint_limits is None else np.array(joint_limits, dtype=float)
+    if limits.shape != (6, 2):
+        raise ValueError("joint_limits must have shape (6, 2).")
+
+    sampled_joint_indices = tuple(int(idx) for idx in sampled_joint_indices)
+    if not sampled_joint_indices:
+        raise ValueError("sampled_joint_indices must not be empty.")
+    if any(idx < 0 or idx >= 6 for idx in sampled_joint_indices):
+        raise ValueError("sampled_joint_indices must contain joint indices from 0 to 5.")
+
+    fixed_angles = np.array(fixed_angles, dtype=float).flatten()
+    if fixed_angles.size != 6:
+        raise ValueError("fixed_angles must contain exactly 6 joint angles.")
+
+    joint_samples = [np.linspace(limits[idx, 0], limits[idx, 1], samples_per_joint) for idx in sampled_joint_indices]
+    total_points = samples_per_joint ** len(sampled_joint_indices)
+    workspace_points = np.empty((total_points, 3), dtype=float)
+
+    for point_idx, sampled_values in enumerate(product(*joint_samples)):
+        q = fixed_angles.copy()
+        for joint_idx, joint_value in zip(sampled_joint_indices, sampled_values):
+            q[joint_idx] = joint_value
+        T06 = Forward_Kinematics(q[0], q[1] + THETA2_OFFSET, q[2], q[3], q[4], q[5])
+        workspace_points[point_idx] = T06[:3, 3]
+
+    return workspace_points
+
+
+def set_axes_equal_from_points(ax, points, padding_ratio=0.08):
+    points = np.array(points, dtype=float)
+    mins = np.min(points, axis=0)
+    maxs = np.max(points, axis=0)
+    center = (mins + maxs) / 2.0
+    radius = float(np.max(maxs - mins) / 2.0)
+    radius = max(radius * (1.0 + padding_ratio), 1e-6)
+
+    ax.set_xlim(center[0] - radius, center[0] + radius)
+    ax.set_ylim(center[1] - radius, center[1] + radius)
+    ax.set_zlim(center[2] - radius, center[2] + radius)
+
+
+def plot_workspace_cloud(workspace_points, samples_per_joint=WORKSPACE_SAMPLES_PER_JOINT, point_size=WORKSPACE_POINT_SIZE):
+    workspace_points = np.array(workspace_points, dtype=float)
+    if workspace_points.ndim != 2 or workspace_points.shape[1] != 3:
+        raise ValueError("workspace_points must have shape (N, 3).")
+
+    points_m = workspace_points / 1000.0
+    fig = plt.figure(figsize=(8, 8), facecolor="#e8e8e8")
+    fig.canvas.manager.set_window_title("Robot Workspace Cloud")
+    ax = fig.add_subplot(111, projection="3d", facecolor="#f1f1f1")
+    ax.scatter(
+        points_m[:, 0],
+        points_m[:, 1],
+        points_m[:, 2],
+        color="#ff0000",
+        s=point_size,
+        alpha=0.95,
+        marker=".",
+        linewidths=0,
+        depthshade=False,
+    )
+    ax.set_title("Workspace of Welding Robot", pad=14)
+    ax.set_xlabel("X (m)", labelpad=8)
+    ax.set_ylabel("Y (m)", labelpad=8)
+    ax.set_zlabel("Z (m)", labelpad=8)
+    set_axes_equal_from_points(ax, points_m, padding_ratio=0.12)
+    ax.set_box_aspect((1.0, 1.0, 0.85))
+    ax.view_init(elev=18, azim=-38)
+    ax.grid(True, color="#d8d8d8", linewidth=0.7)
+    ax.xaxis.pane.set_facecolor((0.94, 0.94, 0.94, 1.0))
+    ax.yaxis.pane.set_facecolor((0.94, 0.94, 0.94, 1.0))
+    ax.zaxis.pane.set_facecolor((0.94, 0.94, 0.94, 1.0))
+    ax.xaxis.pane.set_edgecolor("#d0d0d0")
+    ax.yaxis.pane.set_edgecolor("#d0d0d0")
+    ax.zaxis.pane.set_edgecolor("#d0d0d0")
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92)
+    return fig, ax
+
+
+def run_workspace_preview(samples_per_joint=WORKSPACE_SAMPLES_PER_JOINT):
+    workspace_points = generate_workspace_points(samples_per_joint=samples_per_joint)
+    return plot_workspace_cloud(workspace_points, samples_per_joint=samples_per_joint)

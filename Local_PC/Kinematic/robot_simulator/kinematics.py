@@ -1,6 +1,6 @@
 import numpy as np
 
-from .constants import L1, L2, L3, NEG, POS, THETA2_OFFSET, d0, d1, d2
+from .constants import IK_CONTINUITY_WEIGHTS, L1, L2, L3, NEG, POS, THETA2_OFFSET, d0, d1, d2
 from .conversions import are_joint_angles_within_limits, normalize_angle
 
 
@@ -200,10 +200,45 @@ def Inverse_Kinematics(EE_pos, R_0_6, current_angles=None, angle_tolerance=5.0, 
                 theta6_IK += 180
 
         for theta5_IK in theta5_candidates:
-            if Check_T_0_6(EE_pos, R_0_6, theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK):
-                solution = [theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK]
-                if are_joint_angles_within_limits(solution):
-                    all_complete_solutions.append(solution)
+            candidate_solutions = [
+                [theta1_IK, theta2_IK, theta3_IK, theta4_IK, theta5_IK, theta6_IK],
+                [
+                    theta1_IK,
+                    theta2_IK,
+                    theta3_IK,
+                    normalize_angle(theta4_IK + 180.0),
+                    -theta5_IK,
+                    normalize_angle(theta6_IK - 180.0),
+                ],
+                [
+                    theta1_IK,
+                    theta2_IK,
+                    theta3_IK,
+                    normalize_angle(theta4_IK - 180.0),
+                    -theta5_IK,
+                    normalize_angle(theta6_IK + 180.0),
+                ],
+            ]
+
+            if current_angles is not None and abs(theta5_IK) < 1.0:
+                preserved_theta4 = float(current_angles[3])
+                preserved_theta6 = normalize_angle(theta4_IK + theta6_IK - preserved_theta4)
+                candidate_solutions.append(
+                    [theta1_IK, theta2_IK, theta3_IK, preserved_theta4, theta5_IK, preserved_theta6]
+                )
+
+            seen_keys = set()
+            for solution in candidate_solutions:
+                key = tuple(round(float(value), 6) for value in solution)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                if not are_joint_angles_within_limits(solution):
+                    continue
+                if not Check_T_0_6(EE_pos, R_0_6, *solution):
+                    continue
+                all_complete_solutions.append(solution)
 
     if not all_complete_solutions:
         return {"status": "FAIL", "solution": None, "all_solutions": [], "num_solutions": 0}
@@ -218,7 +253,7 @@ def Inverse_Kinematics(EE_pos, R_0_6, current_angles=None, angle_tolerance=5.0, 
                 diff = abs(sol[i] - current_angles[i])
                 if diff > 180:
                     diff = 360 - diff
-                error += diff
+                error += IK_CONTINUITY_WEIGHTS[i] * diff
             if error < min_error:
                 min_error = error
                 best_solution = sol

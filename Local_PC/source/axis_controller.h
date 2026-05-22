@@ -34,6 +34,8 @@ using AxisPositions = std::array<int, AXIS_COUNT>;
 using AxisStatuses = std::array<EZISERVO_AXISSTATUS, AXIS_COUNT>;
 using AxisVelocities = std::array<int, AXIS_COUNT>;
 using AxisVectors = std::array<std::vector<int>, AXIS_COUNT>;
+constexpr size_t EXT_AXIS_COUNT = AXIS_COUNT + 1;
+using AxisVectorsEx = std::array<std::vector<int>, EXT_AXIS_COUNT>;
 using AxisBools = std::array<bool, AXIS_COUNT>;
 
 class AxisController {
@@ -77,6 +79,7 @@ public:
     void stopEndstopMonitor();
 
     bool writeBufferToFile(const std::string& filename,const AxisVectors& data,bool append);
+    bool writeBufferToFile(const std::string& filename,const AxisVectorsEx& data,bool append);
     bool readActualVelocities(AxisVelocities& velocities);
     bool writeRpmToFile(const std::string& filename, const AxisVectors& velocityData);
     // void inputToOutputTest();
@@ -103,7 +106,10 @@ private:
     void recordingThread();
     void stopRecordingThread();
     bool goWithBuffer(const AxisVectors& paths);
+    bool goWithBuffer(const AxisVectorsEx& paths);
     bool loadFileToBuffer(const std::string& filename);
+    bool readInputSignal(bool& signal);
+    bool setRelay(bool on);
    
     AxisVectors file_buffer_;
     AxisPorts nPortIDs_{};

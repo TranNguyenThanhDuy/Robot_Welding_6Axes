@@ -20,6 +20,9 @@ constexpr int kStreamingAccelTimeMs = 5;
 constexpr int kStreamingDecelTimeMs = 5;
 constexpr double kMinCornerSpeedScale = 0.25;
 constexpr double kStraightCosThreshold = 0.98;
+constexpr auto kMotionPollInterval = std::chrono::milliseconds(10);
+constexpr auto kHomingTimeout = std::chrono::seconds(45);
+constexpr auto kFinalSettleTimeout = std::chrono::seconds(20);
 
 std::chrono::microseconds g_segment_period =
     std::chrono::duration_cast<std::chrono::microseconds>(
@@ -194,6 +197,121 @@ bool restoreAllMotionTiming(const AxisPorts& ports,
         }
     }
     return ok;
+}
+
+void stopAllAxes(const AxisPorts& ports, const AxisSlaves& slaves) {
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        const int ret = FAS_MoveStop(ports[i], slaves[i]);
+        if (ret != FMM_OK) {
+            std::cout << "Failed to stop axis " << (i + 1) << ": " << ret << std::endl;
+        }
+    }
+}
+
+bool hasMotionFault(const EZISERVO_AXISSTATUS& st) {
+    return st.FFLAG_ERRORALL ||
+           st.FFLAG_HWPOSILMT ||
+           st.FFLAG_HWNEGALMT ||
+           st.FFLAG_SWPOGILMT ||
+           st.FFLAG_SWNEGALMT ||
+           st.FFLAG_ERRPOSOVERFLOW ||
+           st.FFLAG_ERROVERCURRENT ||
+           st.FFLAG_ERROVERSPEED ||
+           st.FFLAG_ERRPOSTRACKING ||
+           st.FFLAG_ERROVERLOAD ||
+           st.FFLAG_ERROVERHEAT ||
+           st.FFLAG_ERRBACKEMF ||
+           st.FFLAG_ERRMOTORPOWER ||
+           st.FFLAG_ERRINPOSITION ||
+           st.FFLAG_EMGSTOP;
+}
+
+void printMotionStatus(size_t axis, const EZISERVO_AXISSTATUS& st) {
+    std::cout << "Axis " << (axis + 1)
+              << " status=0x" << std::hex << st.dwValue << std::dec
+              << " servo=" << st.FFLAG_SERVOON
+              << " motion=" << st.FFLAG_MOTIONING
+              << " error=" << st.FFLAG_ERRORALL
+              << " hw+=" << st.FFLAG_HWPOSILMT
+              << " hw-=" << st.FFLAG_HWNEGALMT
+              << " sw+=" << st.FFLAG_SWPOGILMT
+              << " sw-=" << st.FFLAG_SWNEGALMT
+              << " posOverflow=" << st.FFLAG_ERRPOSOVERFLOW
+              << " overSpeed=" << st.FFLAG_ERROVERSPEED
+              << " posTracking=" << st.FFLAG_ERRPOSTRACKING
+              << " overload=" << st.FFLAG_ERROVERLOAD
+              << " inPosition=" << st.FFLAG_ERRINPOSITION
+              << " emg=" << st.FFLAG_EMGSTOP
+              << std::endl;
+}
+
+std::chrono::milliseconds estimateMoveTimeout(const AxisPositions& current,
+                                              const AxisPositions& targets,
+                                              const AxisVelocities& velocities,
+                                              const AxisBools& hasCommand) {
+    double longestSeconds = 0.0;
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        if (!hasCommand[i] || velocities[i] <= 0) continue;
+        const auto distance =
+            std::llabs(static_cast<long long>(targets[i]) - static_cast<long long>(current[i]));
+        longestSeconds = std::max(longestSeconds,
+                                  static_cast<double>(distance) / velocities[i]);
+    }
+
+    const auto estimated = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::duration<double>(longestSeconds * 3.0 + 3.0));
+    return std::max(std::chrono::milliseconds(estimated), std::chrono::milliseconds(5000));
+}
+
+bool waitForMotionComplete(const AxisPorts& ports,
+                           const AxisSlaves& slaves,
+                           const AxisBools& activeAxes,
+                           std::chrono::milliseconds timeout,
+                           const char* label) {
+    AxisStatuses statuses{};
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (true) {
+        bool allDone = true;
+
+        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+            if (!activeAxes[i]) continue;
+
+            const int ret = FAS_GetAxisStatus(ports[i], slaves[i], &(statuses[i].dwValue));
+            if (ret != FMM_OK) {
+                std::cout << label << " failed to read status for axis " << (i + 1)
+                          << ": " << ret << std::endl;
+                stopAllAxes(ports, slaves);
+                return false;
+            }
+
+            if (hasMotionFault(statuses[i])) {
+                std::cout << label << " stopped because axis " << (i + 1)
+                          << " reported a fault/limit." << std::endl;
+                printMotionStatus(i, statuses[i]);
+                stopAllAxes(ports, slaves);
+                return false;
+            }
+
+            if (statuses[i].FFLAG_MOTIONING) {
+                allDone = false;
+            }
+        }
+
+        if (allDone) return true;
+
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::cout << label << " timeout while waiting for driver running bit to clear."
+                      << std::endl;
+            for (size_t i = 0; i < AXIS_COUNT; ++i) {
+                if (activeAxes[i]) printMotionStatus(i, statuses[i]);
+            }
+            stopAllAxes(ports, slaves);
+            return false;
+        }
+
+        std::this_thread::sleep_for(kMotionPollInterval);
+    }
 }
 }
 //hihi
@@ -476,23 +594,12 @@ bool AxisController::home() {
         }
     }
 
-    AxisBools done{};
     std::cout << "Waiting for all motors to complete homing..." << std::endl;
-    while (true) {
-        bool allDone = true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            if (done[i]) continue;
-            if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) ==
-                FMM_OK) {
-                done[i] = !statuses[i].FFLAG_MOTIONING;
-                if (done[i]) {
-                    std::cout << axisName(i) << " homing complete." << std::endl;
-                }
-            }
-            allDone = allDone && done[i];
-        }
-        if (allDone) break;
+    AxisBools activeAxes{};
+    activeAxes.fill(true);
+    if (!waitForMotionComplete(nPortIDs_, iSlaveNos_, activeAxes, kHomingTimeout,
+                               "Homing")) {
+        return false;
     }
 
     AxisPositions finalPos{};
@@ -831,15 +938,11 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
         }
     }
 
-    AxisStatuses st{};
-    while (true) {
-        bool done = true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        for (size_t a = 0; a < AXIS_COUNT; ++a) {
-            FAS_GetAxisStatus(nPortIDs_[a], iSlaveNos_[a], &st[a].dwValue);
-            done &= !st[a].FFLAG_MOTIONING;
-        }
-        if (done) break;
+    AxisBools activeAxes{};
+    activeAxes.fill(true);
+    if (!waitForMotionComplete(nPortIDs_, iSlaveNos_, activeAxes, kFinalSettleTimeout,
+                               "GO final settle")) {
+        return finishRun(false);
     }
 
     // --- TẮT MỎ HÀN ---
@@ -998,23 +1101,10 @@ bool AxisController::movePos(const AxisPositions& targets) {
         }
     }
 
-    AxisBools done{};
     std::cout << "Waiting for motors to complete movement..." << std::endl;
-    while (true) {
-        bool allDone = true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        for (size_t i = 0; i < AXIS_COUNT; ++i) {
-            if (!hasCommand[i] || done[i]) continue;
-            if (FAS_GetAxisStatus(nPortIDs_[i], iSlaveNos_[i], &(statuses[i].dwValue)) ==
-                FMM_OK) {
-                done[i] = !statuses[i].FFLAG_MOTIONING;
-                if (done[i]) {
-                    std::cout << axisName(i) << " reached target position." << std::endl;
-                }
-            }
-            allDone = allDone && (done[i] || !hasCommand[i]);
-        }
-        if (allDone) break;
+    const auto timeout = estimateMoveTimeout(current, targets, velocities, hasCommand);
+    if (!waitForMotionComplete(nPortIDs_, iSlaveNos_, hasCommand, timeout, "Move")) {
+        return false;
     }
 
     AxisPositions finalPos{};
@@ -1092,6 +1182,12 @@ bool AxisController::goPos() {
             }
         }
 
+        AxisPositions current{};
+        if (!readActualPositions(current)) {
+            std::cout << "Failed to get current positions." << std::endl;
+            return false;
+        }
+
         for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
             if (!hasCommand[axis]) continue;
             if (FAS_MoveSingleAxisAbsPos(nPortIDs_[axis], iSlaveNos_[axis], targets[axis],
@@ -1102,19 +1198,9 @@ bool AxisController::goPos() {
             }
         }
 
-        AxisBools done{};
-        while (true) {
-            bool allDone = true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            for (size_t axis = 0; axis < AXIS_COUNT; ++axis) {
-                if (!hasCommand[axis] || done[axis]) continue;
-                if (FAS_GetAxisStatus(nPortIDs_[axis], iSlaveNos_[axis],
-                                      &(statuses[axis].dwValue)) == FMM_OK) {
-                    done[axis] = !statuses[axis].FFLAG_MOTIONING;
-                }
-                allDone = allDone && (done[axis] || !hasCommand[axis]);
-            }
-            if (allDone) break;
+        const auto timeout = estimateMoveTimeout(current, targets, velocities, hasCommand);
+        if (!waitForMotionComplete(nPortIDs_, iSlaveNos_, hasCommand, timeout, "Go pos")) {
+            return false;
         }
     }
 

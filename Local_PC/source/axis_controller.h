@@ -25,7 +25,7 @@ constexpr size_t AXIS_COUNT = 6;
 #endif
 // ------------------------------------------------------------
 
-constexpr unsigned int base_velocity = 10000;
+constexpr unsigned int base_velocity = 1000;
 constexpr unsigned int min_velocity = 500;
 
 using AxisPorts = std::array<int, AXIS_COUNT>;
@@ -69,6 +69,7 @@ public:
     void setModeFile();
     void setFileName(const std::string& name);
     std::string FileName() const;
+    void setBaseVelocityOverride(double velocity);
 
     // Các hàm giao tiếp I/O cơ bản
     bool setOutputSignal(size_t axisIdx, uint32_t outMask, bool state);
@@ -102,6 +103,7 @@ private:
     AxisVelocities computeVelocities(const AxisPositions& current,
                                      const AxisPositions& targets,
                                      const AxisBools& hasCommand) const;
+    unsigned int baseVelocityForAxis(size_t axisIdx) const;
     bool allServoOn(const AxisStatuses& statuses) const;
     void recordingThread();
     void stopRecordingThread();
@@ -123,6 +125,7 @@ private:
     int record_file_index_ = 1;
     std::string filename_;
     AxisVectors recorded_velocities_;
+    std::atomic<double> base_velocity_override_{-1.0};
 
     std::array<std::vector<double>, AXIS_COUNT> recorded_rpms_; 
     std::array<double, AXIS_COUNT> gear_ratios_;

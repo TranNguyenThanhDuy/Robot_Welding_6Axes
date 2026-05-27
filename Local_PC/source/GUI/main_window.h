@@ -16,6 +16,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QLabel;
 class QSpinBox;
+class QDoubleSpinBox;
 class QTimer;
 class QString;
 
@@ -29,6 +30,11 @@ private:
     void connectSignals();
     void logLine(const QString& text);
     void logDetections(const std::vector<Detection>& detections);
+    void appendPointLog(const QString& action);
+    void refreshLineMapPreviews();
+    void applyBaseVelocity();
+    void loadFirstFilePointToInputs(const QString& path);
+    QString filePathWithGuiMoveTime(const QString& path);
     void refreshFileModePath();
     void startUsbCamera();
     void stopUsbCamera();
@@ -39,7 +45,12 @@ private:
 
     QPlainTextEdit* log_ = nullptr;
     QLabel* cameraPreview_ = nullptr;
+    QLabel* oxyPreview_ = nullptr;
+    QLabel* oxzPreview_ = nullptr;
+    QPlainTextEdit* pointLog_ = nullptr;
     std::vector<QSpinBox*> axisInputs_;
+    QDoubleSpinBox* moveTimeInput_ = nullptr;
+    QDoubleSpinBox* baseVelocityInput_ = nullptr;
 
     QPushButton* btnOn_ = nullptr;
     QPushButton* btnOff_ = nullptr;

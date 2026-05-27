@@ -2,8 +2,11 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QDoubleSpinBox>
+#include <QFile>
 #include <QFont>
 #include <QFileInfo>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -11,6 +14,7 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QString>
 #include <QStringList>
@@ -74,6 +78,45 @@ QString resolveLineMappedPath(const AppConfig& config) {
 
     return QString();
 }
+
+QString resolveLinePreviewPath(const AppConfig& config, const QString& suffix) {
+    const QString outputDir = config.lineMappingOutputDir;
+    const QStringList dirCandidates = {
+        QDir::current().absoluteFilePath(outputDir),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(outputDir),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("../") + outputDir)
+    };
+
+    for (const QString& dirPath : dirCandidates) {
+        QDir dir(dirPath);
+        if (!dir.exists()) {
+            continue;
+        }
+
+        QFileInfoList previewFiles = dir.entryInfoList(
+            QStringList() << QStringLiteral("*_line_%1.png").arg(suffix),
+            QDir::Files | QDir::Readable,
+            QDir::Time);
+        if (!previewFiles.isEmpty()) {
+            return previewFiles.front().absoluteFilePath();
+        }
+    }
+
+    return QString();
+}
+
+void setupPreviewLabel(QLabel* label, const QString& text) {
+    label->setMinimumSize(560, 360);
+    label->setAlignment(Qt::AlignCenter);
+    label->setText(text);
+    label->setStyleSheet(
+        "QLabel {"
+        "background-color: #f7f8fa;"
+        "color: #596273;"
+        "border: 1px solid #ccd2dc;"
+        "border-radius: 4px;"
+        "}");
+}
 }
 
 MainWindow::MainWindow(QWidget* parent) : QWidget(parent), config_(loadAppConfig()) {
@@ -93,6 +136,7 @@ MainWindow::~MainWindow() {
 
 void MainWindow::buildUi() {
     setWindowTitle("Robot Welding 6-Axis Controller");
+    resize(1920, 1080);
 
     auto* root = new QVBoxLayout(this);
 
@@ -106,46 +150,75 @@ void MainWindow::buildUi() {
     title->setFont(titleFont);
     root->addWidget(title);
 
-    auto* controlBox = new QGroupBox("Control");
-    auto* controlLayout = new QHBoxLayout(controlBox);
-    btnOn_ = new QPushButton("Servo ON");
-    btnOff_ = new QPushButton("Servo OFF");
-    btnHome_ = new QPushButton("Home");
-    btnSetPos_ = new QPushButton("SetPos (Zero)");
-    btnGetPos_ = new QPushButton("GetPos");
-    controlLayout->addWidget(btnOn_);
-    controlLayout->addWidget(btnOff_);
-    controlLayout->addWidget(btnHome_);
-    controlLayout->addWidget(btnSetPos_);
-    controlLayout->addWidget(btnGetPos_);
-    root->addWidget(controlBox);
+    auto* operationBox = new QGroupBox("Operation");
+    auto* operationLayout = new QHBoxLayout(operationBox);
+    operationLayout->setSpacing(12);
 
-    auto* motionBox = new QGroupBox("Motion");
-    auto* motionLayout = new QVBoxLayout(motionBox);
-
-    auto* axisRow = new QHBoxLayout();
+    auto* axisBox = new QGroupBox("Motor Pulses");
+    axisBox->setFixedWidth(230);
+    auto* axisColumn = new QVBoxLayout(axisBox);
+    auto* axisList = new QVBoxLayout();
+    axisList->setSpacing(6);
     axisInputs_.reserve(kGuiAxisCount);
     for (size_t i = 0; i < kGuiAxisCount; ++i) {
-        auto* col = new QVBoxLayout();
+        auto* row = new QHBoxLayout();
         QString axisLabel =
             (i < AXIS_COUNT)
                 ? QString::fromStdString(controller_.axisName(i))
                 : QString("Motor %1").arg(i + 1);
         auto* label = new QLabel(axisLabel);
+        label->setFixedWidth(70);
         auto* spin = new QSpinBox();
         spin->setRange(-1000000, 1000000);
         spin->setSingleStep(100);
+        spin->setFixedWidth(130);
         if (i >= AXIS_COUNT) {
             spin->setEnabled(false);
         }
         axisInputs_.push_back(spin);
-        col->addWidget(label);
-        col->addWidget(spin);
-        axisRow->addLayout(col);
+        row->setSpacing(4);
+        row->addWidget(label);
+        row->addWidget(spin);
+        row->addStretch();
+        axisList->addLayout(row);
     }
-    motionLayout->addLayout(axisRow);
+    axisColumn->addLayout(axisList);
+    axisColumn->addStretch();
 
-    auto* motionButtons = new QHBoxLayout();
+    auto* motionBox = new QGroupBox("Motion");
+    motionBox->setFixedWidth(340);
+    auto* motionColumn = new QVBoxLayout(motionBox);
+    auto* moveTimeRow = new QHBoxLayout();
+    auto* moveTimeLabel = new QLabel("Move Time");
+    moveTimeLabel->setFixedWidth(70);
+    moveTimeInput_ = new QDoubleSpinBox();
+    moveTimeInput_->setRange(0.0, 3600.0);
+    moveTimeInput_->setDecimals(3);
+    moveTimeInput_->setSingleStep(0.1);
+    moveTimeInput_->setSuffix(" s");
+    moveTimeInput_->setSpecialValueText("Default");
+    moveTimeInput_->setFixedWidth(150);
+    moveTimeRow->setSpacing(4);
+    moveTimeRow->addWidget(moveTimeLabel);
+    moveTimeRow->addWidget(moveTimeInput_);
+    moveTimeRow->addStretch();
+    motionColumn->addLayout(moveTimeRow);
+
+    auto* baseVelocityRow = new QHBoxLayout();
+    auto* baseVelocityLabel = new QLabel("Base Vel");
+    baseVelocityLabel->setFixedWidth(70);
+    baseVelocityInput_ = new QDoubleSpinBox();
+    baseVelocityInput_->setRange(0.0, 1000000.0);
+    baseVelocityInput_->setDecimals(0);
+    baseVelocityInput_->setSingleStep(100.0);
+    baseVelocityInput_->setSpecialValueText("Default");
+    baseVelocityInput_->setFixedWidth(150);
+    baseVelocityRow->setSpacing(4);
+    baseVelocityRow->addWidget(baseVelocityLabel);
+    baseVelocityRow->addWidget(baseVelocityInput_);
+    baseVelocityRow->addStretch();
+    motionColumn->addLayout(baseVelocityRow);
+
     btnMove_ = new QPushButton("MovePos");
     btnGo_ = new QPushButton("Go (Recorded)");
     btnModeToggle_ = new QPushButton("Mode: AUTO RECORD");
@@ -155,16 +228,76 @@ void MainWindow::buildUi() {
     btnStop_ = new QPushButton("Stop");
     btnClear_ = new QPushButton("Clear");
     btnDone_ = new QPushButton("Done");
-    motionButtons->addWidget(btnMove_);
-    motionButtons->addWidget(btnGo_);
-    motionButtons->addWidget(btnModeToggle_);
-    motionButtons->addWidget(btnRecord_);
-    motionButtons->addWidget(btnSavePos_);
-    motionButtons->addWidget(btnStop_);
-    motionButtons->addWidget(btnClear_);
-    motionButtons->addWidget(btnDone_);
-    motionLayout->addLayout(motionButtons);
-    root->addWidget(motionBox);
+    const std::vector<QPushButton*> motionButtons = {
+        btnMove_,
+        btnGo_,
+        btnModeToggle_,
+        btnRecord_,
+        btnSavePos_,
+        btnStop_,
+        btnClear_,
+        btnDone_,
+    };
+    auto* motionButtonGrid = new QGridLayout();
+    motionButtonGrid->setHorizontalSpacing(8);
+    motionButtonGrid->setVerticalSpacing(8);
+    for (size_t i = 0; i < motionButtons.size(); ++i) {
+        QPushButton* button = motionButtons[i];
+        button->setFixedSize(150, 30);
+        motionButtonGrid->addWidget(button, static_cast<int>(i % 4), static_cast<int>(i / 4));
+    }
+    motionColumn->addLayout(motionButtonGrid);
+    motionColumn->addStretch();
+
+    auto* controlBox = new QGroupBox("Control");
+    controlBox->setFixedWidth(175);
+    auto* controlColumn = new QVBoxLayout(controlBox);
+    btnOn_ = new QPushButton("Servo ON");
+    btnOff_ = new QPushButton("Servo OFF");
+    btnHome_ = new QPushButton("Home");
+    btnSetPos_ = new QPushButton("SetPos (Zero)");
+    btnGetPos_ = new QPushButton("GetPos");
+    const std::vector<QPushButton*> controlButtons = {
+        btnOn_,
+        btnOff_,
+        btnHome_,
+        btnSetPos_,
+        btnGetPos_,
+    };
+    for (QPushButton* button : controlButtons) {
+        button->setFixedSize(150, 30);
+        controlColumn->addWidget(button);
+    }
+    controlColumn->addStretch();
+
+    auto* infoBox = new QGroupBox("Info");
+    infoBox->setFixedWidth(290);
+    auto* infoColumn = new QVBoxLayout(infoBox);
+    const std::vector<QPushButton*> infoButtons = {
+        new QPushButton("Lamp Info"),
+        new QPushButton("Error Code"),
+        new QPushButton("Input Status"),
+        new QPushButton("Output Status"),
+        new QPushButton("Alarm Reset"),
+        new QPushButton("Clear Info"),
+    };
+    auto* infoGrid = new QGridLayout();
+    infoGrid->setHorizontalSpacing(8);
+    infoGrid->setVerticalSpacing(8);
+    for (size_t i = 0; i < infoButtons.size(); ++i) {
+        QPushButton* button = infoButtons[i];
+        button->setFixedSize(130, 30);
+        infoGrid->addWidget(button, static_cast<int>(i / 2), static_cast<int>(i % 2));
+    }
+    infoColumn->addLayout(infoGrid);
+    infoColumn->addStretch();
+
+    operationLayout->addWidget(controlBox, 0, Qt::AlignTop);
+    operationLayout->addWidget(motionBox, 0, Qt::AlignTop);
+    operationLayout->addWidget(axisBox, 0, Qt::AlignTop);
+    operationLayout->addWidget(infoBox, 0, Qt::AlignTop);
+    operationLayout->addStretch();
+    root->addWidget(operationBox);
 
     auto* fileBox = new QGroupBox("File Path");
     auto* fileLayout = new QHBoxLayout(fileBox);
@@ -178,49 +311,61 @@ void MainWindow::buildUi() {
 
     root->addWidget(fileBox);
 
-    auto* cameraBox = new QGroupBox("Camera");
-    auto* cameraLayout = new QVBoxLayout(cameraBox);
-    cameraPreview_ = new QLabel("Camera Preview");
-    cameraPreview_->setMinimumSize(640, 360);
-    cameraPreview_->setAlignment(Qt::AlignCenter);
-    cameraPreview_->setStyleSheet(
-        "QLabel {"
-        "background-color: #111;"
-        "color: #ddd;"
-        "border: 1px solid #444;"
-        "border-radius: 6px;"
-        "}");
-    cameraLayout->addWidget(cameraPreview_);
+    auto* pointLogBox = new QGroupBox("Point Log");
+    auto* pointLogLayout = new QVBoxLayout(pointLogBox);
+    pointLog_ = new QPlainTextEdit();
+    pointLog_->setReadOnly(true);
+    pointLog_->setMinimumHeight(110);
+    pointLog_->setMaximumHeight(150);
+    QFont pointLogFont = pointLog_->font();
+    pointLogFont.setFamily("monospace");
+    pointLog_->setFont(pointLogFont);
+    pointLogLayout->addWidget(pointLog_);
+    root->addWidget(pointLogBox);
 
-    auto* cameraButtons = new QHBoxLayout();
-    btnCamStart_ = new QPushButton("Start Cam");
-    btnCamStop_ = new QPushButton("Stop Cam");
-    cameraButtons->addWidget(btnCamStart_);
-    cameraButtons->addWidget(btnCamStop_);
-    cameraLayout->addLayout(cameraButtons);
+    auto* previewBox = new QGroupBox("Line Map Preview");
+    auto* previewLayout = new QHBoxLayout(previewBox);
 
-    root->addWidget(cameraBox);
+    auto* oxyColumn = new QVBoxLayout();
+    oxyColumn->addWidget(new QLabel("OXY"));
+    oxyPreview_ = new QLabel();
+    setupPreviewLabel(oxyPreview_, "OXY preview will appear after Done");
+    oxyColumn->addWidget(oxyPreview_);
 
-    log_ = new QPlainTextEdit();
+    auto* oxzColumn = new QVBoxLayout();
+    oxzColumn->addWidget(new QLabel("OXZ"));
+    oxzPreview_ = new QLabel();
+    setupPreviewLabel(oxzPreview_, "OXZ preview will appear after Done");
+    oxzColumn->addWidget(oxzPreview_);
+
+    previewLayout->addLayout(oxyColumn);
+    previewLayout->addLayout(oxzColumn);
+    root->addWidget(previewBox);
+
+    log_ = new QPlainTextEdit(this);
     log_->setReadOnly(true);
-    log_->setMinimumHeight(220);
-    root->addWidget(new QLabel("Log"));
-    root->addWidget(log_);
-
-    cameraTimer_ = new QTimer(this);
-    cameraTimer_->setInterval(33);
+    log_->hide();
 }
 
 void MainWindow::connectSignals() {
-    QObject::connect(btnOn_, &QPushButton::clicked,
-                     [&]() { controller_.servoOn(); });
-    QObject::connect(btnOff_, &QPushButton::clicked,
-                     [&]() { controller_.servoOff(); });
+    QObject::connect(btnOn_, &QPushButton::clicked, [&]() {
+        applyBaseVelocity();
+        if (controller_.servoOn() && pointLog_) {
+            pointLog_->appendPlainText("All Servo ON");
+        }
+    });
+    QObject::connect(btnOff_, &QPushButton::clicked, [&]() {
+        applyBaseVelocity();
+        if (controller_.servoOff() && pointLog_) {
+            pointLog_->appendPlainText("All Servo OFF");
+        }
+    });
     QObject::connect(btnHome_, &QPushButton::clicked,
-                     [&]() { controller_.home(); });
+                     [&]() { applyBaseVelocity(); controller_.home(); });
     QObject::connect(btnSetPos_, &QPushButton::clicked,
-                     [&]() { controller_.setOriginPos(); });
+                     [&]() { applyBaseVelocity(); controller_.setOriginPos(); });
     QObject::connect(btnGetPos_, &QPushButton::clicked, [&]() {
+        applyBaseVelocity();
         AxisPositions pos{};
         if (!controller_.getPos(pos)) {
             logLine("Failed to read current positions.");
@@ -238,6 +383,7 @@ void MainWindow::connectSignals() {
         logLine("Current positions - " + parts.join(", "));
     });
     QObject::connect(btnMove_, &QPushButton::clicked, [&]() {
+        applyBaseVelocity();
         AxisPositions targets{};
         for (size_t i = 0; i < AXIS_COUNT; ++i) {
             targets[i] = axisInputs_[i]->value();
@@ -262,27 +408,30 @@ void MainWindow::connectSignals() {
 
     });
     QObject::connect(btnGo_, &QPushButton::clicked, [&]() {
+        applyBaseVelocity();
         if (controller_.isFileMode()) {
             refreshFileModePath();
         }
         controller_.go();
     });
-    QObject::connect(btnRecord_, &QPushButton::clicked,
-                     [&]() { controller_.record(); });
-    QObject::connect(btnSavePos_, &QPushButton::clicked,
-                     [&]() { controller_.savePos(); });
+    QObject::connect(btnRecord_, &QPushButton::clicked, [&]() {
+        const bool wasRecording = controller_.isRecording();
+        controller_.record();
+        if (!wasRecording && controller_.isRecording()) {
+            appendPointLog("Record");
+        }
+    });
+    QObject::connect(btnSavePos_, &QPushButton::clicked, [&]() {
+        if (controller_.savePos()) {
+            appendPointLog("SavePos");
+        }
+    });
     QObject::connect(btnStop_, &QPushButton::clicked,
                      [&]() { controller_.stop(); });
     QObject::connect(btnClear_, &QPushButton::clicked,
                      [&]() { controller_.clear(); });
     QObject::connect(btnDone_, &QPushButton::clicked,
                      [&]() { triggerPythonLineMap(); });
-    QObject::connect(btnCamStart_, &QPushButton::clicked,
-                     [&]() { startUsbCamera(); });
-    QObject::connect(btnCamStop_, &QPushButton::clicked,
-                     [&]() { stopUsbCamera(); });
-    QObject::connect(cameraTimer_, &QTimer::timeout,
-                     [&]() { updateCameraFrame(); });
 }
 
 void MainWindow::logLine(const QString& text) {
@@ -302,6 +451,138 @@ void MainWindow::logDetections(const std::vector<Detection>& detections) {
     }
 }
 
+void MainWindow::appendPointLog(const QString& action) {
+    if (!pointLog_) {
+        return;
+    }
+
+    AxisPositions pos{};
+    if (!controller_.getPos(pos)) {
+        return;
+    }
+
+    QStringList parts;
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        parts << QString::fromStdString(controller_.axisName(i)) + "=" + QString::number(pos[i]);
+    }
+    pointLog_->appendPlainText(QString("%1 | %2").arg(action, parts.join("  ")));
+}
+
+void MainWindow::applyBaseVelocity() {
+    controller_.setBaseVelocityOverride(baseVelocityInput_ ? baseVelocityInput_->value() : 0.0);
+}
+
+void MainWindow::loadFirstFilePointToInputs(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        logLine("Cannot open mapped file for first point: " + path);
+        return;
+    }
+
+    while (!file.atEnd()) {
+        const QString line = QString::fromUtf8(file.readLine()).trimmed();
+        if (line.isEmpty() || line.startsWith('#') || line.startsWith(';')) {
+            continue;
+        }
+
+        const QStringList parts = line.split(QRegularExpression(QStringLiteral("\\s+")),
+                                             Qt::SkipEmptyParts);
+        if (parts.size() < static_cast<int>(AXIS_COUNT)) {
+            logLine("First mapped point has fewer values than active axes.");
+            return;
+        }
+
+        for (size_t i = 0; i < AXIS_COUNT && i < axisInputs_.size(); ++i) {
+            bool ok = false;
+            const int value = parts[static_cast<int>(i)].toInt(&ok);
+            if (!ok) {
+                logLine("Invalid pulse value in first mapped point: " + parts[static_cast<int>(i)]);
+                return;
+            }
+            axisInputs_[i]->setValue(value);
+        }
+        logLine("Loaded first FILE point into Motor Pulses.");
+        return;
+    }
+
+    logLine("Mapped file does not contain any pulse point: " + path);
+}
+
+void MainWindow::refreshLineMapPreviews() {
+    const QString oxyPath = resolveLinePreviewPath(config_, QStringLiteral("oxy"));
+    const QString oxzPath = resolveLinePreviewPath(config_, QStringLiteral("oxz"));
+
+    auto loadPreview = [](QLabel* label, const QString& path, const QString& fallbackText) {
+        if (!label) {
+            return;
+        }
+        if (path.isEmpty()) {
+            label->setPixmap(QPixmap());
+            label->setText(fallbackText);
+            return;
+        }
+
+        QPixmap pixmap(path);
+        if (pixmap.isNull()) {
+            label->setPixmap(QPixmap());
+            label->setText("Cannot load preview image");
+            return;
+        }
+
+        label->setPixmap(pixmap.scaled(label->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    };
+
+    loadPreview(oxyPreview_, oxyPath, "OXY preview not found");
+    loadPreview(oxzPreview_, oxzPath, "OXZ preview not found");
+
+    if (!oxyPath.isEmpty() || !oxzPath.isEmpty()) {
+        logLine(QString("Line map previews updated. OXY: %1 | OXZ: %2")
+                    .arg(oxyPath.isEmpty() ? QStringLiteral("missing") : oxyPath)
+                    .arg(oxzPath.isEmpty() ? QStringLiteral("missing") : oxzPath));
+    }
+}
+
+QString MainWindow::filePathWithGuiMoveTime(const QString& path) {
+    if (!moveTimeInput_ || moveTimeInput_->value() <= 0.0) {
+        return path;
+    }
+
+    QFile input(path);
+    if (!input.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return path;
+    }
+
+    const QByteArray content = input.readAll();
+    input.close();
+
+    const QString text = QString::fromUtf8(content);
+    const QRegularExpression timingHeader(
+        QStringLiteral(R"(^\s*[#;]\s*(segment_period_s|segment_seconds|segment_period_ms|segment_ms|segment_period_us|segment_us|movetimevalue|move_time|move_time_s)\s*=)"),
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption);
+    if (timingHeader.match(text).hasMatch()) {
+        return path;
+    }
+
+    const QFileInfo sourceInfo(path);
+    const QString timedPath = sourceInfo.dir().absoluteFilePath(
+        sourceInfo.completeBaseName() + QStringLiteral("_gui_time.") + sourceInfo.suffix());
+
+    QFile output(timedPath);
+    if (!output.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        logLine("Cannot create GUI moveTimeValue file: " + timedPath);
+        return path;
+    }
+
+    output.write(QString("# moveTimeValue=%1\n")
+                     .arg(moveTimeInput_->value(), 0, 'f', 3)
+                     .toUtf8());
+    output.write(content);
+    output.close();
+
+    logLine(QString("GUI moveTimeValue file created: %1").arg(timedPath));
+    return timedPath;
+}
+
 void MainWindow::refreshFileModePath() {
     const QString mappedPath = resolveLineMappedPath(config_);
     if (mappedPath.isEmpty()) {
@@ -313,8 +594,10 @@ void MainWindow::refreshFileModePath() {
     }
 
     filePathEdit_->setText(mappedPath);
-    controller_.setFileName(mappedPath.toStdString());
-    logLine("FILE mode using: " + mappedPath);
+    loadFirstFilePointToInputs(mappedPath);
+    const QString runPath = filePathWithGuiMoveTime(mappedPath);
+    controller_.setFileName(runPath.toStdString());
+    logLine("FILE mode using: " + runPath);
 }
 
 void MainWindow::startUsbCamera() {
@@ -464,6 +747,7 @@ void MainWindow::triggerPythonLineMap() {
     if (process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0) {
         logLine("Done completed: Python line-map finished successfully.");
         refreshFileModePath();
+        refreshLineMapPreviews();
     } else {
         logLine(QString("Done failed: Python exited with code %1.").arg(process.exitCode()));
     }

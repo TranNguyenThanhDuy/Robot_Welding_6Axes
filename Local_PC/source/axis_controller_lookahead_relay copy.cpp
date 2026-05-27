@@ -20,13 +20,37 @@ constexpr int kStreamingAccelTimeMs = 5;
 constexpr int kStreamingDecelTimeMs = 5;
 constexpr double kMinCornerSpeedScale = 0.25;
 constexpr double kStraightCosThreshold = 0.98;
+constexpr size_t DI_INDEX = 0;
+constexpr size_t DO_INDEX = 0;
+constexpr size_t FILE_RELAY_COLUMN = 6;
+constexpr auto kRelaySettleDelay = std::chrono::milliseconds(500);
 constexpr auto kMotionPollInterval = std::chrono::milliseconds(10);
 constexpr auto kHomingTimeout = std::chrono::seconds(45);
 constexpr auto kFinalSettleTimeout = std::chrono::seconds(20);
 
+std::vector<int> g_recordedRelayStates;
+std::vector<int> g_savedRelayStates;
+
 std::chrono::microseconds g_segment_period =
     std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::duration<double>(kDefaultSegmentSeconds));
+
+AxisVectorsEx makeExtendedPaths(const AxisVectors& positions,
+                                const std::vector<int>& relayStates) {
+    AxisVectorsEx out;
+    const size_t steps = positions[0].size();
+
+    for (size_t a = 0; a < AXIS_COUNT; ++a) {
+        out[a] = positions[a];
+    }
+
+    out[AXIS_COUNT].reserve(steps);
+    for (size_t i = 0; i < steps; ++i) {
+        out[AXIS_COUNT].push_back(i < relayStates.size() ? relayStates[i] : 0);
+    }
+
+    return out;
+}
 
 std::string trimCopy(const std::string& value) {
     const auto first = value.find_first_not_of(" \t\r\n#;");
@@ -548,12 +572,14 @@ bool AxisController::servoOff() {
     return allOk;
 }
 
-AxisVectors compressBuffer(
-    const AxisVectors& in,
+AxisVectorsEx compressBuffer(
+    const AxisVectorsEx& in,
     int posEps,
     int minTrendLen
 ) {
-    AxisVectors out;
+    AxisVectorsEx out;
+    if (in[0].empty()) return out;
+
     size_t N = in[0].size();
     if (N < 2) return in;
 
@@ -584,16 +610,24 @@ AxisVectors compressBuffer(
         keep[N - 1] = true;
     }
 
+    for (size_t i = 1; i < N; ++i) {
+        if (in[AXIS_COUNT][i] != in[AXIS_COUNT][i - 1]) {
+            keep[i] = true;
+            keep[i - 1] = true;
+        }
+    }
+
     for (size_t i = 0; i < N; ++i) {
         if (!keep[i]) continue;
-        for (size_t a = 0; a < AXIS_COUNT; ++a) {
+        for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
             out[a].push_back(in[a][i]);
         }
     }
 
     return out;
 }
-
+//hi
+//hi
 bool AxisController::home() {
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses)) {
@@ -647,9 +681,10 @@ void AxisController::recordingThread() {
         AxisPositions pos{};
         AxisVelocities vel{};
         std::array<double, AXIS_COUNT> rpm_display{};
+        bool inputSignal = false;
 
         // 1. Đọc vị trí thực tế
-        if (!readActualPositions(pos)) {
+        if (!readActualPositions(pos) || !readInputSignal(inputSignal)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(RECORD_PERIOD_MS));
             continue;
         }
@@ -701,6 +736,7 @@ void AxisController::recordingThread() {
                 // Nếu bạn có dùng mảng recorded_rpms_ thì bỏ comment dòng dưới:
                 // recorded_rpms_[i].push_back(rpm_display[i]);
             }
+            g_recordedRelayStates.push_back(inputSignal ? 1 : 0);
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(RECORD_PERIOD_MS));
@@ -718,6 +754,7 @@ void AxisController::record() {
         for (auto& v : recorded_positions_) {
             v.clear();
         }
+        g_recordedRelayStates.clear();
         for (auto& v : recorded_velocities_) v.clear();
         for (auto& v : recorded_rpms_) v.clear();
     }
@@ -782,6 +819,7 @@ void AxisController::clear() {
     for (auto& path : recorded_positions_) {
         path.clear();
     }
+    g_recordedRelayStates.clear();
     for (auto& v : recorded_rpms_) v.clear();
     for (auto& v : recorded_velocities_) v.clear();
     std::cout << "Cleared recorded positions for all motors." << std::endl;
@@ -792,18 +830,18 @@ bool AxisController::getPos(AxisPositions& pos) {
 }
 
 bool AxisController::goWithBuffer(const AxisVectors& paths) {
+    return goWithBuffer(makeExtendedPaths(paths, {}));
+}
+
+bool AxisController::goWithBuffer(const AxisVectorsEx& paths) {
     if (paths[0].empty()) return false;
 
     AxisStatuses statuses{};
     if (!readAxisStatuses(statuses) || !allServoOn(statuses)) return false;
-    const AxisVectors& runPaths = paths;
+    const AxisVectorsEx& runPaths = paths;
     size_t steps = runPaths[0].size();
     
     // --- BẬT MỎ HÀN ---
-    size_t outAxis = 0; 
-    uint32_t outMask = 0x01; // Tương ứng User OUT 0
-    setOutputSignal(outAxis, outMask, true); 
-    std::cout << "Welding Output ON." << std::endl;
 
     const auto command_window =
         std::chrono::duration_cast<std::chrono::microseconds>(kCommandSpacing * AXIS_COUNT);
@@ -812,7 +850,6 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
         std::cout << "Segment period is shorter than command window. Requested "
                   << segment_period_us.count() << " us, minimum command window "
                   << command_window.count() << " us." << std::endl;
-        setOutputSignal(outAxis, outMask, false);
         return false;
     }
     std::cout << "Segment period: " << segment_period_us.count()
@@ -827,7 +864,6 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
                             kStreamingAccelTimeMs, "streaming accel time") ||
         !setAllMotionTiming(nPortIDs_, iSlaveNos_, kDecelerationTimeParameter,
                             kStreamingDecelTimeMs, "streaming decel time")) {
-        setOutputSignal(outAxis, outMask, false);
         if (timingSaved) {
             restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kAccelerationTimeParameter, savedAccel, "accel time");
             restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kDecelerationTimeParameter, savedDecel, "decel time");
@@ -840,9 +876,8 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
             restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kAccelerationTimeParameter, savedAccel, "accel time");
             restoreAllMotionTiming(nPortIDs_, iSlaveNos_, kDecelerationTimeParameter, savedDecel, "decel time");
         }
-        setOutputSignal(outAxis, outMask, false);
         if (ok) {
-            std::cout << "Welding Output OFF. GO finished." << std::endl;
+            std::cout << "GO finished." << std::endl;
         }
         return ok;
     };
@@ -854,10 +889,27 @@ bool AxisController::goWithBuffer(const AxisVectors& paths) {
 
     AxisBools axisStreamingStarted{};
     axisStreamingStarted.fill(false);
+    bool lastRelayState = false;
+    bool firstBlock = true;
     std::cout << "Lookahead mode: slowing before sharp corners. Min corner scale: "
               << kMinCornerSpeedScale << std::endl;
 
     for (size_t i = 0; i < steps; ++i) {
+        const bool relayState = (runPaths[AXIS_COUNT][i] != 0);
+        if (firstBlock || relayState != lastRelayState) {
+            std::cout << ">> [MOTION] Yeu cau IO thay doi -> "
+                      << (relayState ? "ON" : "OFF") << std::endl;
+
+            if (!setRelay(relayState)) {
+                return finishRun(false);
+            }
+            lastRelayState = relayState;
+            firstBlock = false;
+
+            // std::cout << ">> [MOTION] Dang cho 500ms de Relay dong ngat an toan..." << std::endl;
+            // std::this_thread::sleep_for(kRelaySettleDelay);
+        }
+
         const auto segmentStart = std::chrono::steady_clock::now();
         auto nextCommandTime = segmentStart;
         AxisPositions target{};
@@ -979,7 +1031,8 @@ bool AxisController::goFromFile(const std::string& filename)
     }
 
     // Lưu tạm vào buffer theo dạng mảng các dòng (array of rows)
-    std::vector<AxisPositions> pathBuffer; 
+    std::vector<AxisPositions> pathBuffer;
+    std::vector<int> relayBuffer;
     std::string line;
     double fileSegmentSeconds = -1.0;
     double fileMoveTimeSeconds = -1.0;
@@ -996,18 +1049,31 @@ bool AxisController::goFromFile(const std::string& filename)
         }
 
         std::stringstream ss(line);
+        std::vector<int> row;
+        int val;
+
+        while (ss >> val) {
+            row.push_back(val);
+        }
+
+        if (row.size() < AXIS_COUNT) {
+            std::cout << "Format error at line: " << line << "\n";
+            return false;
+        }
+
         AxisPositions pos{};
 
         for (size_t i = 0; i < AXIS_COUNT; i++)
         {
-            if (!(ss >> pos[i]))
-            {
-                std::cout << "Format error at line: " << line << "\n";
-                return false;
-            }
+            pos[i] = row[i];
         }
         
         // Lưu vào mảng 1 chiều chứa các dòng
+        int relayState = 0;
+        if (row.size() > FILE_RELAY_COLUMN) {
+            relayState = row[FILE_RELAY_COLUMN];
+        }
+        relayBuffer.push_back(relayState);
         pathBuffer.push_back(pos);
     }
 
@@ -1028,12 +1094,13 @@ bool AxisController::goFromFile(const std::string& filename)
     }
 
     // --- PHẦN BẠN ĐANG THIẾU: Chuyển đổi và gọi hàm ---
-    AxisVectors compatiblePaths;
+    AxisVectorsEx compatiblePaths;
     for (const auto& row : pathBuffer) {
         for (size_t i = 0; i < AXIS_COUNT; i++) {
             compatiblePaths[i].push_back(row[i]);
         }
     }
+    compatiblePaths[AXIS_COUNT] = relayBuffer;
     std::string rpmFile = "rpm_" + std::to_string(record_file_index_) + ".txt";
 
     //saveRpmFromPositions(rpmFile, compatiblePaths); // Hàm này sẽ tính toán RPM từ positions và lưu vào file
@@ -1070,10 +1137,10 @@ bool AxisController::go() {
         return goFromFile(filename_);
     }
     else if (mode == static_cast<int>(CaptureMode::ManualSave)) {
-        AxisVectors paths;
+        AxisVectorsEx paths;
         {
             std::lock_guard<std::mutex> lk(rec_mtx_);
-            paths = saved_positions_;
+            paths = makeExtendedPaths(saved_positions_, g_savedRelayStates);
         }
         
         if (paths[0].empty()) {
@@ -1084,10 +1151,10 @@ bool AxisController::go() {
         std::cout << "Executing Manual Save positions..." << std::endl;
         return goWithBuffer(paths); 
     }
-    AxisVectors paths;
+    AxisVectorsEx paths;
     {
         std::lock_guard<std::mutex> lk(rec_mtx_);
-        paths = recorded_positions_;
+        paths = makeExtendedPaths(recorded_positions_, g_recordedRelayStates);
     }
     return goWithBuffer(paths);
 }
@@ -1259,10 +1326,14 @@ bool AxisController::savePos() {
         return false;
     }
 
+    bool inputSignal = false;
+    readInputSignal(inputSignal);
+
     std::lock_guard<std::mutex> lk(rec_mtx_);
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         saved_positions_[i].push_back(pos[i]);
     }
+    g_savedRelayStates.push_back(inputSignal ? 1 : 0);
 
     std::cout << "Saved current position to manual buffer. Total manual points: "
               << saved_positions_[0].size() << std::endl;
@@ -1273,17 +1344,20 @@ bool AxisController::savePos() {
     }
     std::cout << std::endl;
     // --- APPEND TO savePos.txt ---
-    AxisVectors temp;
+    AxisVectorsEx temp;
 
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         temp[i].push_back(pos[i]);
     }
-    for (auto& v : temp) v.clear();
-
     // chỉ ghi 1 điểm (pos hiện tại)
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         temp[i].push_back(pos[i]);
     }
+
+    for (size_t i = 0; i < AXIS_COUNT; ++i) {
+        temp[i].resize(1);
+    }
+    temp[AXIS_COUNT].push_back(inputSignal ? 1 : 0);
 
     if (writeBufferToFile("savePos.txt", temp, true)) {
         std::cout << "Saved to savePos.txt" << std::endl;
@@ -1471,6 +1545,39 @@ bool AxisController::isInputActive(size_t axisIdx, uint32_t inMask, bool& active
     return false;
 }
 
+bool AxisController::readInputSignal(bool& signal)
+{
+    uint32_t input = 0;
+    if (FAS_GetIOInput(nPortIDs_[0], iSlaveNos_[0], &input) != FMM_OK)
+        return false;
+
+    uint32_t bitShift = 26 + DI_INDEX;
+    signal = (input & (1u << bitShift)) != 0;
+    return true;
+}
+
+bool AxisController::setRelay(bool on)
+{
+    uint32_t bitShift = 15 + DO_INDEX;
+    uint32_t mask = (1u << bitShift);
+
+    uint32_t setMask = on ? mask : 0;
+    uint32_t clearMask = on ? 0 : mask;
+
+    int res = FAS_SetIOOutput(
+        nPortIDs_[0],
+        iSlaveNos_[0],
+        setMask,
+        clearMask
+    );
+
+    std::cout << "[IO CONTROL] Driver 0 | Lenh gui di: " << (on ? "ON" : "OFF")
+              << " (Mask 0x" << std::hex << mask << std::dec
+              << ") | Phan hoi (0=OK): " << res << std::endl;
+
+    return res == FMM_OK;
+}
+
 void AxisController::endstopThreadFunc(size_t triggerAxis, uint32_t endstopMask) {
     bool lastState = false;
     while (monitoring_endstop_.load()) {
@@ -1522,6 +1629,36 @@ bool AxisController::writeBufferToFile(const std::string& filename,
         for (size_t a = 0; a < AXIS_COUNT; ++a) {
             file << data[a][i];
             if (a + 1 < AXIS_COUNT) file << " ";
+        }
+        file << "\n";
+    }
+
+    file.close();
+    return true;
+}
+
+bool AxisController::writeBufferToFile(const std::string& filename,
+                                       const AxisVectorsEx& data,
+                                       bool append)
+{
+    std::ofstream file;
+
+    if (append)
+        file.open(filename, std::ios::app);
+    else
+        file.open(filename);
+
+    if (!file.is_open()) {
+        std::cout << "Cannot open file: " << filename << std::endl;
+        return false;
+    }
+
+    size_t steps = data[0].size();
+
+    for (size_t i = 0; i < steps; ++i) {
+        for (size_t a = 0; a < EXT_AXIS_COUNT; ++a) {
+            file << data[a][i];
+            if (a + 1 < EXT_AXIS_COUNT) file << " ";
         }
         file << "\n";
     }

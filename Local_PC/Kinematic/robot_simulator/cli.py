@@ -7,7 +7,12 @@ from matplotlib.widgets import Button, Slider, TextBox
 
 from .constants import CIRCLE_DEFAULT_SAMPLES, CIRCLE_RADIUS, THETA2_OFFSET, WORKSPACE_SAMPLES_PER_JOINT
 from .conversions import clamp_joint_angles, encoder_pulses_to_angles, get_joint_angle_limits, normalize_angle
-from .io_utils import export_angle_sets_to_txt, forward_kinematics_from_encoder_file_all, load_encoder_pulses_from_txt
+from .io_utils import (
+    export_angle_sets_to_txt,
+    forward_kinematics_from_encoder_file_all,
+    load_encoder_pulses_from_txt,
+    load_xyz_waypoints_from_txt,
+)
 from .kinematics import Forward_Kinematics, Inverse_Kinematics, forward_kinematics_from_joint_angles, forward_points
 from .trajectory import (
     MappingIKError,
@@ -16,6 +21,35 @@ from .trajectory import (
     export_line_mapping_from_xyz_file,
 )
 from .visualization import plot_robot, run_workspace_preview, sample_trace_positions
+
+
+def export_line_preview_images(xyz_file_path):
+    points = load_xyz_waypoints_from_txt(xyz_file_path)
+    base_path, _ = os.path.splitext(xyz_file_path)
+    output_paths = {
+        "oxy": base_path.replace("_line_xyz", "_line_oxy") + ".png",
+        "oxz": base_path.replace("_line_xyz", "_line_oxz") + ".png",
+    }
+
+    def save_plane(path, x_values, y_values, x_label, y_label, title):
+        fig, ax = plt.subplots(figsize=(7.5, 4.5), dpi=140)
+        ax.plot(x_values, y_values, color="#1464a5", linewidth=2.2)
+        ax.scatter(x_values, y_values, color="#d22f27", s=10, zorder=3)
+        ax.scatter(x_values[0], y_values[0], color="#1f8f46", s=36, zorder=4, label="Start")
+        ax.scatter(x_values[-1], y_values[-1], color="#1d1d1d", s=36, zorder=4, label="End")
+        ax.set_title(title)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.grid(True, linestyle="--", linewidth=0.6, alpha=0.45)
+        ax.axis("equal")
+        ax.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(path)
+        plt.close(fig)
+
+    save_plane(output_paths["oxy"], points[:, 0], points[:, 1], "X (mm)", "Y (mm)", "Line Map - OXY")
+    save_plane(output_paths["oxz"], points[:, 0], points[:, 2], "X (mm)", "Z (mm)", "Line Map - OXZ")
+    return output_paths
 
 
 def run_slider_ui():
@@ -459,6 +493,9 @@ def run_line_mapping_cli(file_path):
     print(f"Mapped pulses: {mapping['mapped_pulses_output_path']}")
     print(f"Mapped angles: {mapping['mapped_angles_output_path']}")
     print(f"Mapped XYZ: {mapping['mapped_xyz_output_path']}")
+    preview_paths = export_line_preview_images(mapping["mapped_xyz_output_path"])
+    print(f"Preview OXY: {preview_paths['oxy']}")
+    print(f"Preview OXZ: {preview_paths['oxz']}")
     return 0
 
 

@@ -2,7 +2,14 @@ import os
 
 import numpy as np
 
-from .constants import ENCODER_PPR, LINE_MAPPING_OUTPUT_DIR, LINE_MAPPING_SAMPLES_PER_SEGMENT, XYZ_OUTPUT_DIR
+from .constants import (
+    CIRCLE_OUTPUT_DIR,
+    ENCODER_PPR,
+    LINE_MAPPING_LOCK_Z_TO_FIRST,
+    LINE_MAPPING_OUTPUT_DIR,
+    LINE_MAPPING_SAMPLES_PER_SEGMENT,
+    XYZ_OUTPUT_DIR,
+)
 from .conversions import (
     angles_to_encoder_pulses,
     are_joint_angles_within_limits,
@@ -10,6 +17,7 @@ from .conversions import (
     convert_ik_angles_to_display_angles,
     encoder_pulses_to_angles,
     ensure_output_dir,
+    normalize_angle,
 )
 from .io_utils import (
     export_mapped_pulses_to_txt,
@@ -17,7 +25,26 @@ from .io_utils import (
     forward_kinematics_from_encoder_file_all,
     load_xyz_waypoints_from_txt,
 )
-from .kinematics import Inverse_Kinematics, forward_kinematics_from_joint_angles
+from .kinematics import Check_T_0_6, Inverse_Kinematics, forward_kinematics_from_joint_angles
+
+
+class MappingIKError(ValueError):
+    def __init__(self, mode, point_index=None, point=None, status=None, message=None):
+        self.mode = mode
+        self.point_index = point_index
+        self.point = None if point is None else np.array(point, dtype=float).flatten()
+        self.status = status
+        super().__init__(message or self._build_message())
+
+    def _build_message(self):
+        pieces = [f"{self.mode}: IK failed"]
+        if self.point_index is not None:
+            pieces.append(f"at point #{int(self.point_index) + 1}")
+        if self.status:
+            pieces.append(f"status={self.status}")
+        if self.point is not None and self.point.size == 3:
+            pieces.append(f"XYZ=({self.point[0]:.3f}, {self.point[1]:.3f}, {self.point[2]:.3f})")
+        return " | ".join(pieces)
 
 
 def build_piecewise_segments_from_cartesian_points(points):
@@ -161,6 +188,28 @@ generate_polyline_samples = generate_polyline_position_samples
 generate_polyline_targets = generate_polyline_position_rotation_targets
 
 
+def generate_segment_start_rotation_targets(rotations, num_samples_per_segment=LINE_MAPPING_SAMPLES_PER_SEGMENT):
+    rotation_array = np.array(rotations, dtype=float)
+    if rotation_array.ndim != 3 or rotation_array.shape[1:] != (3, 3):
+        raise ValueError("Expected rotations with shape (N, 3, 3).")
+    if len(rotation_array) < 2:
+        raise ValueError("At least 2 waypoint rotations are required.")
+
+    polyline_rotations = [rotation_array[0].copy()]
+    waypoint_indices = [0]
+    for idx in range(len(rotation_array) - 1):
+        start_rotation = rotation_array[idx]
+        end_rotation = rotation_array[idx + 1]
+        for sample_idx in range(1, num_samples_per_segment + 1):
+            if sample_idx == num_samples_per_segment:
+                polyline_rotations.append(end_rotation.copy())
+            else:
+                polyline_rotations.append(start_rotation.copy())
+        waypoint_indices.append(len(polyline_rotations) - 1)
+
+    return np.array(polyline_rotations, dtype=float), np.array(waypoint_indices, dtype=int)
+
+
 def cartesian_polyline_to_joint_trajectory(
     cartesian_points,
     target_rotations,
@@ -205,8 +254,30 @@ def cartesian_polyline_to_joint_trajectory(
             continue
         ik_result = Inverse_Kinematics(point, target_rotations[point_idx], current_angles=current_angles, angle_tolerance=angle_tolerance, debug=debug)
         if ik_result["status"] not in {"OK", "NO_MATCH"} or ik_result.get("solution") is None:
-            raise ValueError(f"IK failed at polyline point index {point_idx} with status {ik_result['status']}.")
-        current_angles = np.array(ik_result["solution"], dtype=float)
+            ik_result = Inverse_Kinematics(
+                point,
+                target_rotations[point_idx],
+                current_angles=None,
+                angle_tolerance=angle_tolerance,
+                debug=debug,
+            )
+        if ik_result["status"] not in {"OK", "NO_MATCH"} or ik_result.get("solution") is None:
+            raise MappingIKError(
+                mode="Polyline",
+                point_index=point_idx,
+                point=point,
+                status=ik_result.get("status"),
+            )
+
+        solution_angles = np.array(ik_result["solution"], dtype=float)
+        if abs(solution_angles[4]) < 1.0:
+            preserved_solution = solution_angles.copy()
+            preserved_solution[3] = current_angles[3]
+            preserved_solution[5] = normalize_angle(solution_angles[3] + solution_angles[5] - preserved_solution[3])
+            if are_joint_angles_within_limits(preserved_solution) and Check_T_0_6(point, target_rotations[point_idx], *preserved_solution):
+                solution_angles = preserved_solution
+
+        current_angles = solution_angles
         joint_trajectory.append(current_angles.copy())
     return np.array(joint_trajectory, dtype=float)
 
@@ -229,25 +300,73 @@ def build_line_mapping_from_encoder_file(
     raw_positions = np.array([item["position"] for item in raw_results], dtype=float)
     raw_rotations = np.array([item["rotation"] for item in raw_results], dtype=float)
     initial_angles = raw_angles_ik[0].copy()
+    target_positions = raw_positions.copy()
+    locked_z_value = None
+
+    if LINE_MAPPING_LOCK_Z_TO_FIRST:
+        locked_z_value = float(target_positions[0, 2])
+        target_positions[:, 2] = locked_z_value
 
     mapped_positions, mapped_rotations, segment_lengths, waypoint_indices = generate_polyline_position_rotation_targets(
-        raw_positions,
+        target_positions,
         raw_rotations,
         num_samples_per_segment=num_samples_per_segment,
     )
-    fixed_waypoint_angles = {int(polyline_idx): raw_angles_ik[waypoint_idx].copy() for waypoint_idx, polyline_idx in enumerate(waypoint_indices)}
-    mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
-        mapped_positions,
-        mapped_rotations,
-        initial_angles,
-        fixed_waypoint_angles=fixed_waypoint_angles,
-        angle_tolerance=angle_tolerance,
-        debug=debug,
-    )
+    if LINE_MAPPING_LOCK_Z_TO_FIRST:
+        fixed_waypoint_angles = {0: raw_angles_ik[0].copy()}
+    else:
+        fixed_waypoint_angles = {int(polyline_idx): raw_angles_ik[waypoint_idx].copy() for waypoint_idx, polyline_idx in enumerate(waypoint_indices)}
+
+    try:
+        mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
+            mapped_positions,
+            mapped_rotations,
+            initial_angles,
+            fixed_waypoint_angles=fixed_waypoint_angles,
+            angle_tolerance=angle_tolerance,
+            debug=debug,
+        )
+        rotation_strategy = "segment_slerp"
+    except MappingIKError as exc:
+        fallback_rotations, fallback_waypoint_indices = generate_segment_start_rotation_targets(
+            raw_rotations,
+            num_samples_per_segment=num_samples_per_segment,
+        )
+        if not np.array_equal(fallback_waypoint_indices, waypoint_indices):
+            raise ValueError("Internal error: fallback waypoint indices do not match the polyline layout.") from exc
+        try:
+            mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
+                mapped_positions,
+                fallback_rotations,
+                initial_angles,
+                fixed_waypoint_angles=fixed_waypoint_angles,
+                angle_tolerance=angle_tolerance,
+                debug=debug,
+            )
+            mapped_rotations = fallback_rotations
+            rotation_strategy = "segment_start_fallback"
+        except MappingIKError:
+            if not LINE_MAPPING_LOCK_Z_TO_FIRST:
+                raise
+            fixed_start_rotations = np.repeat(raw_rotations[0][None, :, :], len(mapped_positions), axis=0)
+            mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
+                mapped_positions,
+                fixed_start_rotations,
+                initial_angles,
+                fixed_waypoint_angles=fixed_waypoint_angles,
+                angle_tolerance=angle_tolerance,
+                debug=debug,
+            )
+            mapped_rotations = fixed_start_rotations
+            rotation_strategy = "fixed_start_fallback"
+
     mapped_angles = convert_ik_angles_to_display_angles(mapped_angles_ik)
     mapped_pulses = np.array([angles_to_encoder_pulses(angles, ppr=ppr, gearbox_ratios=gearbox_ratios) for angles in mapped_angles], dtype=int)
-    for waypoint_idx, polyline_idx in enumerate(waypoint_indices):
-        mapped_pulses[polyline_idx] = np.rint(raw_pulses[waypoint_idx]).astype(int)
+    if LINE_MAPPING_LOCK_Z_TO_FIRST:
+        mapped_pulses[0] = np.rint(raw_pulses[0]).astype(int)
+    else:
+        for waypoint_idx, polyline_idx in enumerate(waypoint_indices):
+            mapped_pulses[polyline_idx] = np.rint(raw_pulses[waypoint_idx]).astype(int)
     mapped_pulses = np.rint(mapped_pulses).astype(int)
     mapped_angles_from_pulses = np.array(
         [encoder_pulses_to_angles(pulses, ppr=ppr, gearbox_ratios=gearbox_ratios) for pulses in mapped_pulses],
@@ -260,6 +379,8 @@ def build_line_mapping_from_encoder_file(
         "raw_angles": raw_angles,
         "raw_positions": raw_positions,
         "raw_rotations": raw_rotations,
+        "target_positions": target_positions,
+        "locked_z_value": locked_z_value,
         "mapped_positions": mapped_positions,
         "mapped_rotations": mapped_rotations,
         "mapped_angles": mapped_angles,
@@ -269,6 +390,7 @@ def build_line_mapping_from_encoder_file(
         "waypoint_indices": waypoint_indices,
         "segment_lengths": segment_lengths,
         "num_samples_per_segment": int(num_samples_per_segment),
+        "rotation_strategy": rotation_strategy,
     }
 
 
@@ -305,11 +427,11 @@ def export_line_mapping_from_encoder_file(
         mapped_angles_output_path = os.path.join(LINE_MAPPING_OUTPUT_DIR, f"{base_name}_line_angles{ext}")
     with open(mapped_angles_output_path, "w", encoding="utf-8") as file:
         for angle_set in mapping["mapped_angles"]:
-            file.write(" ".join(f"{angle:.1f}" for angle in angle_set) + "\n")
+            file.write(" ".join(f"{angle:.6f}" for angle in angle_set) + "\n")
 
     if mapped_xyz_output_path is None:
         mapped_xyz_output_path = os.path.join(LINE_MAPPING_OUTPUT_DIR, f"{base_name}_line_xyz{ext}")
-    export_xyz_positions_to_txt(mapping["mapped_actual_positions"], mapped_xyz_output_path)
+    export_xyz_positions_to_txt(mapping["mapped_actual_positions"], mapped_xyz_output_path, decimal_places=0)
 
     mapping["mapped_pulses_output_path"] = mapped_pulses_output_path
     mapping["mapped_angles_output_path"] = mapped_angles_output_path
@@ -348,7 +470,12 @@ def build_line_mapping_from_xyz_points(
     initial_angles_ik = convert_display_angles_to_ik_angles(reference_angles)
     first_point_ik = Inverse_Kinematics(mapped_positions[0], fixed_rotation, current_angles=initial_angles_ik, angle_tolerance=angle_tolerance, debug=debug)
     if first_point_ik["status"] not in {"OK", "NO_MATCH"} or first_point_ik.get("solution") is None:
-        raise ValueError(f"IK failed at first XYZ waypoint with status {first_point_ik['status']}.")
+        raise MappingIKError(
+            mode="XYZ",
+            point_index=0,
+            point=mapped_positions[0],
+            status=first_point_ik.get("status"),
+        )
 
     fixed_waypoint_angles = {0: np.array(first_point_ik["solution"], dtype=float).copy()}
     mapped_angles_ik = cartesian_polyline_to_joint_trajectory(
@@ -420,10 +547,126 @@ def export_line_mapping_from_xyz_file(
         mapped_angles_output_path = os.path.join(XYZ_OUTPUT_DIR, f"{base_name}_xyz_angles{ext}")
     with open(mapped_angles_output_path, "w", encoding="utf-8") as file:
         for angle_set in mapping["mapped_angles"]:
-            file.write(" ".join(f"{angle:.1f}" for angle in angle_set) + "\n")
+            file.write(" ".join(f"{angle:.6f}" for angle in angle_set) + "\n")
 
     if mapped_xyz_output_path is None:
         mapped_xyz_output_path = os.path.join(XYZ_OUTPUT_DIR, f"{base_name}_xyz_actual{ext}")
+    export_xyz_positions_to_txt(mapping["mapped_actual_positions"], mapped_xyz_output_path)
+
+    mapping["mapped_pulses_output_path"] = mapped_pulses_output_path
+    mapping["mapped_angles_output_path"] = mapped_angles_output_path
+    mapping["mapped_xyz_output_path"] = mapped_xyz_output_path
+    return mapping
+
+
+def generate_circle_xy_points(center_x, center_y, z_height, radius, num_samples):
+    center_x = float(center_x)
+    center_y = float(center_y)
+    z_height = float(z_height)
+    radius = float(radius)
+    num_samples = int(num_samples)
+    if radius <= 0.0:
+        raise ValueError("Circle radius must be greater than 0.")
+    if num_samples < 8:
+        raise ValueError("Circle samples must be at least 8.")
+
+    angles = np.linspace(0.0, 2.0 * np.pi, num_samples, endpoint=False)
+    circle_points = np.column_stack(
+        [
+            center_x + radius * np.cos(angles),
+            center_y + radius * np.sin(angles),
+            np.full(num_samples, z_height, dtype=float),
+        ]
+    )
+    return np.vstack([circle_points, circle_points[0]])
+
+
+def build_circle_mapping_xy(
+    center_x,
+    center_y,
+    z_height,
+    radius,
+    num_samples,
+    reference_angles,
+    fixed_rotation=None,
+    ppr=ENCODER_PPR,
+    gearbox_ratios=None,
+    angle_tolerance=180.0,
+    debug=False,
+):
+    circle_points = generate_circle_xy_points(center_x, center_y, z_height, radius, num_samples)
+    mapping = build_line_mapping_from_xyz_points(
+        circle_points,
+        reference_angles=reference_angles,
+        fixed_rotation=fixed_rotation,
+        ppr=ppr,
+        gearbox_ratios=gearbox_ratios,
+        num_samples_per_segment=1,
+        angle_tolerance=angle_tolerance,
+        debug=debug,
+    )
+    mapping["circle_center"] = np.array([float(center_x), float(center_y), float(z_height)], dtype=float)
+    mapping["circle_radius"] = float(radius)
+    mapping["circle_samples"] = int(num_samples)
+    return mapping
+
+
+def _format_circle_value_for_name(value):
+    formatted = f"{float(value):.3f}".rstrip("0").rstrip(".")
+    return formatted.replace("-", "m").replace(".", "p")
+
+
+def export_circle_mapping_xy(
+    center_x,
+    center_y,
+    z_height,
+    radius,
+    num_samples,
+    reference_angles,
+    fixed_rotation=None,
+    mapped_pulses_output_path=None,
+    mapped_angles_output_path=None,
+    mapped_xyz_output_path=None,
+    ppr=ENCODER_PPR,
+    gearbox_ratios=None,
+    angle_tolerance=180.0,
+    debug=False,
+):
+    mapping = build_circle_mapping_xy(
+        center_x,
+        center_y,
+        z_height,
+        radius,
+        num_samples,
+        reference_angles=reference_angles,
+        fixed_rotation=fixed_rotation,
+        ppr=ppr,
+        gearbox_ratios=gearbox_ratios,
+        angle_tolerance=angle_tolerance,
+        debug=debug,
+    )
+
+    ensure_output_dir(CIRCLE_OUTPUT_DIR)
+    base_name = (
+        "circle_xy"
+        f"_cx_{_format_circle_value_for_name(center_x)}"
+        f"_cy_{_format_circle_value_for_name(center_y)}"
+        f"_z_{_format_circle_value_for_name(z_height)}"
+        f"_r_{_format_circle_value_for_name(radius)}"
+    )
+
+    if mapped_pulses_output_path is None:
+        mapped_pulses_output_path = os.path.join(CIRCLE_OUTPUT_DIR, f"{base_name}_circle_pulses.txt")
+    export_mapped_pulses_to_txt(mapping["mapped_pulses"], mapped_pulses_output_path)
+
+    if mapped_angles_output_path is None:
+        mapped_angles_output_path = os.path.join(CIRCLE_OUTPUT_DIR, f"{base_name}_circle_angles.txt")
+    with open(mapped_angles_output_path, "w", encoding="utf-8") as file:
+        for angle_set in mapping["mapped_angles"]:
+            file.write(" ".join(f"{angle:.6f}" for angle in angle_set) + "\n")
+
+    if mapped_xyz_output_path is None:
+        mapped_xyz_output_path = os.path.join(CIRCLE_OUTPUT_DIR, f"{base_name}_circle_actual.txt")
     export_xyz_positions_to_txt(mapping["mapped_actual_positions"], mapped_xyz_output_path)
 
     mapping["mapped_pulses_output_path"] = mapped_pulses_output_path

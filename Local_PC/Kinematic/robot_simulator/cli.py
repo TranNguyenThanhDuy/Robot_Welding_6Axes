@@ -5,12 +5,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.widgets import Button, Slider, TextBox
 
-from .constants import THETA2_OFFSET
-from .conversions import clamp_joint_angles, get_joint_angle_limits, normalize_angle
-from .io_utils import export_angle_sets_to_txt, forward_kinematics_from_encoder_file_all
-from .kinematics import Forward_Kinematics, Inverse_Kinematics, forward_points
-from .trajectory import export_line_mapping_from_encoder_file, export_line_mapping_from_xyz_file
-from .visualization import plot_robot, sample_trace_positions
+from .constants import CIRCLE_DEFAULT_SAMPLES, CIRCLE_RADIUS, THETA2_OFFSET, WORKSPACE_SAMPLES_PER_JOINT
+from .conversions import clamp_joint_angles, encoder_pulses_to_angles, get_joint_angle_limits, normalize_angle
+from .io_utils import export_angle_sets_to_txt, forward_kinematics_from_encoder_file_all, load_encoder_pulses_from_txt
+from .kinematics import Forward_Kinematics, Inverse_Kinematics, forward_kinematics_from_joint_angles, forward_points
+from .trajectory import (
+    MappingIKError,
+    export_circle_mapping_xy,
+    export_line_mapping_from_encoder_file,
+    export_line_mapping_from_xyz_file,
+)
+from .visualization import plot_robot, run_workspace_preview, sample_trace_positions
 
 
 def run_slider_ui():
@@ -34,6 +39,8 @@ def run_slider_ui():
     btn_mode_line = Button(ax_mode_line, "Line Map")
     ax_mode_xyz = fig.add_axes([controls_panel[0] + 0.24, 0.84, 0.10, 0.034])
     btn_mode_xyz = Button(ax_mode_xyz, "XYZ")
+    ax_mode_circle = fig.add_axes([controls_panel[0] + 0.36, 0.84, 0.10, 0.034])
+    btn_mode_circle = Button(ax_mode_circle, "Circle")
 
     ax_file_label = fig.add_axes([controls_panel[0], 0.80, 0.22, 0.03])
     ax_file_label.axis("off")
@@ -89,6 +96,8 @@ def run_slider_ui():
 
     ax_reset = fig.add_axes([controls_panel[0] + 0.09, 0.12, 0.16, 0.045])
     btn_reset = Button(ax_reset, "Reset", hovercolor="#dddddd")
+    ax_workspace = fig.add_axes([controls_panel[0] + 0.09, 0.06, 0.16, 0.045])
+    btn_workspace = Button(ax_workspace, "Workspace", hovercolor="#dddddd")
 
     def choose_txt_file():
         root = Tk()
@@ -121,6 +130,24 @@ def run_slider_ui():
         messagebox.showinfo("Info", message, parent=root)
         root.destroy()
 
+    def format_mapping_error(exc, mode_name):
+        if isinstance(exc, MappingIKError):
+            lines = [f"{mode_name} failed during IK."]
+            if exc.point_index is not None:
+                lines.append(f"Point index: {exc.point_index} (point #{exc.point_index + 1})")
+            if exc.point is not None and exc.point.size == 3:
+                lines.append(f"XYZ target: {exc.point[0]:.3f}, {exc.point[1]:.3f}, {exc.point[2]:.3f}")
+            if exc.status is not None:
+                lines.append(f"IK status: {exc.status}")
+            if exc.status == "OOW":
+                lines.append("Hint: target point or tool orientation is outside reachable workspace.")
+            elif exc.status == "FAIL":
+                lines.append("Hint: position may be reachable, but current orientation or joint limits make IK invalid.")
+            elif exc.status == "NO_MATCH":
+                lines.append("Hint: IK found a pose, but it was too far from the previous joint state.")
+            return "\n".join(lines)
+        return str(exc)
+
     def set_mode(mode):
         file_state["mode"] = mode
         if mode == "teach":
@@ -129,18 +156,28 @@ def run_slider_ui():
             btn_mode_teach.color = "#d9ead3"
             btn_mode_line.color = "#f0f0f0"
             btn_mode_xyz.color = "#f0f0f0"
+            btn_mode_circle.color = "#f0f0f0"
         elif mode == "line":
             txt_file_label.set_text("Waypoint File (.txt)")
             btn_primary.label.set_text("Map")
             btn_mode_teach.color = "#f0f0f0"
             btn_mode_line.color = "#d9ead3"
             btn_mode_xyz.color = "#f0f0f0"
-        else:
+            btn_mode_circle.color = "#f0f0f0"
+        elif mode == "xyz":
             txt_file_label.set_text("XYZ File (.txt)")
             btn_primary.label.set_text("XYZ")
             btn_mode_teach.color = "#f0f0f0"
             btn_mode_line.color = "#f0f0f0"
             btn_mode_xyz.color = "#d9ead3"
+            btn_mode_circle.color = "#f0f0f0"
+        else:
+            txt_file_label.set_text("Circle Pose File (.txt)")
+            btn_primary.label.set_text("Circle")
+            btn_mode_teach.color = "#f0f0f0"
+            btn_mode_line.color = "#f0f0f0"
+            btn_mode_xyz.color = "#f0f0f0"
+            btn_mode_circle.color = "#d9ead3"
         fig.canvas.draw_idle()
 
     def render_robot(q, sync_textboxes=True):
@@ -181,7 +218,7 @@ def run_slider_ui():
             exported_file_path, _ = export_angle_sets_to_txt(file_path)
             results = forward_kinematics_from_encoder_file_all(file_path)
         except Exception as exc:
-            show_warning(str(exc))
+            show_warning(format_mapping_error(exc, "Teach"))
             return
         file_state["path"] = file_path
         file_state["is_running"] = True
@@ -210,7 +247,7 @@ def run_slider_ui():
         try:
             mapping = export_line_mapping_from_encoder_file(file_path)
         except Exception as exc:
-            show_warning(str(exc))
+            show_warning(format_mapping_error(exc, "Line Map"))
             return
         file_state["path"] = file_path
         file_state["is_running"] = True
@@ -243,7 +280,7 @@ def run_slider_ui():
         try:
             mapping = export_line_mapping_from_xyz_file(file_path, reference_angles=file_state["current_q"])
         except Exception as exc:
-            show_warning(str(exc))
+            show_warning(format_mapping_error(exc, "XYZ"))
             return
         file_state["path"] = file_path
         file_state["is_running"] = True
@@ -265,13 +302,62 @@ def run_slider_ui():
             f"Mapped XYZ saved to:\n{mapping['mapped_xyz_output_path']}"
         )
 
+    def run_circle_mapping(_event):
+        file_path = file_state["path"].strip() or txt_file_path.text.strip()
+        if not file_path:
+            show_warning("Please choose a circle pose .txt file first.")
+            return
+        if not os.path.isfile(file_path):
+            show_warning("File not found.")
+            return
+        try:
+            reference_pulses = load_encoder_pulses_from_txt(file_path)
+            reference_angles = encoder_pulses_to_angles(reference_pulses)
+            reference_pose = forward_kinematics_from_joint_angles(reference_angles)
+            center_x, center_y, z_height = reference_pose["position"]
+            mapping = export_circle_mapping_xy(
+                center_x,
+                center_y,
+                z_height,
+                CIRCLE_RADIUS,
+                CIRCLE_DEFAULT_SAMPLES,
+                reference_angles=reference_angles,
+                fixed_rotation=reference_pose["rotation"],
+            )
+        except Exception as exc:
+            show_warning(format_mapping_error(exc, "Circle"))
+            return
+
+        file_state["path"] = file_path
+        file_state["is_running"] = True
+        file_state["trace_points"] = []
+        try:
+            for idx, angle_set in enumerate(mapping["mapped_angles_from_pulses"]):
+                if idx == 0:
+                    file_state["trace_points"] = [mapping["mapped_actual_positions"][0].copy()]
+                else:
+                    file_state["trace_points"].append(mapping["mapped_actual_positions"][idx].copy())
+                render_robot(angle_set, sync_textboxes=False)
+                plt.pause(0.08)
+        finally:
+            file_state["is_running"] = False
+
+        show_info(
+            "Circle mapping completed.\n"
+            f"Mapped pulses saved to:\n{mapping['mapped_pulses_output_path']}\n\n"
+            f"Mapped angles saved to:\n{mapping['mapped_angles_output_path']}\n\n"
+            f"Mapped XYZ saved to:\n{mapping['mapped_xyz_output_path']}"
+        )
+
     def on_primary_action(event):
         if file_state["mode"] == "teach":
             run_encoder_file(event)
         elif file_state["mode"] == "line":
             run_line_mapping(event)
-        else:
+        elif file_state["mode"] == "xyz":
             run_xyz_mapping(event)
+        else:
+            run_circle_mapping(event)
 
     for s in sliders:
         s.on_changed(update)
@@ -294,12 +380,21 @@ def run_slider_ui():
             s.reset()
         update()
 
+    def on_workspace(_event):
+        try:
+            run_workspace_preview(samples_per_joint=WORKSPACE_SAMPLES_PER_JOINT)
+            plt.show(block=False)
+        except Exception as exc:
+            show_warning(str(exc))
+
     btn_file.on_clicked(select_txt_file)
     btn_primary.on_clicked(on_primary_action)
     btn_reset.on_clicked(on_reset)
+    btn_workspace.on_clicked(on_workspace)
     btn_mode_teach.on_clicked(lambda _event: set_mode("teach"))
     btn_mode_line.on_clicked(lambda _event: set_mode("line"))
     btn_mode_xyz.on_clicked(lambda _event: set_mode("xyz"))
+    btn_mode_circle.on_clicked(lambda _event: set_mode("circle"))
     txt_file_path.on_submit(on_file_path_submit)
 
     set_mode("teach")
@@ -367,6 +462,53 @@ def run_line_mapping_cli(file_path):
     return 0
 
 
+def run_circle_mapping_cli(file_path):
+    if not file_path:
+        print("Missing circle pose input file path.")
+        return 1
+    if not os.path.isfile(file_path):
+        print(f"Input file not found: {file_path}")
+        return 1
+
+    try:
+        reference_pulses = load_encoder_pulses_from_txt(file_path)
+        reference_angles = encoder_pulses_to_angles(reference_pulses)
+        reference_pose = forward_kinematics_from_joint_angles(reference_angles)
+        center_x, center_y, z_height = reference_pose["position"]
+        mapping = export_circle_mapping_xy(
+            center_x,
+            center_y,
+            z_height,
+            CIRCLE_RADIUS,
+            CIRCLE_DEFAULT_SAMPLES,
+            reference_angles=reference_angles,
+            fixed_rotation=reference_pose["rotation"],
+        )
+    except MappingIKError as exc:
+        print(f"Circle mapping failed: {exc}")
+        return 1
+    except Exception as exc:
+        print(f"Circle mapping failed: {exc}")
+        return 1
+
+    print("Circle mapping completed.")
+    print(f"Mapped pulses: {mapping['mapped_pulses_output_path']}")
+    print(f"Mapped angles: {mapping['mapped_angles_output_path']}")
+    print(f"Mapped XYZ: {mapping['mapped_xyz_output_path']}")
+    return 0
+
+
+def run_workspace_cli(samples_text=""):
+    try:
+        samples = int(samples_text) if samples_text else WORKSPACE_SAMPLES_PER_JOINT
+        run_workspace_preview(samples_per_joint=samples)
+        plt.show()
+    except Exception as exc:
+        print(f"Workspace preview failed: {exc}")
+        return 1
+    return 0
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] == "test":
@@ -374,6 +516,10 @@ def main(argv=None):
         return 0
     if argv and argv[0] == "line-map":
         return run_line_mapping_cli(argv[1] if len(argv) > 1 else "")
+    if argv and argv[0] == "circle-map":
+        return run_circle_mapping_cli(argv[1] if len(argv) > 1 else "")
+    if argv and argv[0] == "workspace":
+        return run_workspace_cli(argv[1] if len(argv) > 1 else "")
 
     run_slider_ui()
     return 0

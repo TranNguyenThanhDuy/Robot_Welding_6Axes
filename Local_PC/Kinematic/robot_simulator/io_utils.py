@@ -105,11 +105,23 @@ def export_mapped_pulses_to_txt(mapped_pulses, output_file_path):
     return output_file_path
 
 
-def export_xyz_positions_to_txt(xyz_positions, output_file_path):
+def export_xyz_positions_to_txt(xyz_positions, output_file_path, decimal_places=3):
     xyz_positions = np.array(xyz_positions, dtype=float)
     if xyz_positions.ndim != 2 or xyz_positions.shape[1] != 3:
         raise ValueError("Expected XYZ positions with shape (N, 3).")
+    if isinstance(decimal_places, (list, tuple, np.ndarray)):
+        decimal_places_per_axis = [int(value) for value in decimal_places]
+        if len(decimal_places_per_axis) != 3:
+            raise ValueError("decimal_places must contain exactly 3 values when provided per axis.")
+    else:
+        decimal_places_per_axis = [int(decimal_places)] * 3
     with open(output_file_path, "w", encoding="utf-8") as file:
         for xyz in xyz_positions:
-            file.write(" ".join(f"{value:.3f}" for value in xyz) + "\n")
+            formatted_values = []
+            for value, axis_decimal_places in zip(xyz, decimal_places_per_axis):
+                if axis_decimal_places <= 0:
+                    formatted_values.append(str(int(round(value))))
+                else:
+                    formatted_values.append(f"{value:.{axis_decimal_places}f}")
+            file.write(" ".join(formatted_values) + "\n")
     return output_file_path

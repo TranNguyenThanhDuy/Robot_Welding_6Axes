@@ -95,7 +95,7 @@ else ifeq ($(PF_CANON),windows)
 else ifeq ($(PF_CANON),linux)
   CXX      ?= g++
   TARGET   = test
-  GUI_TARGET = gui
+  GUI_TARGET = ahead
   SRC      = $(LOCAL_SRC)
   LIBDIR  ?= lib
   CXXFLAGS ?= $(BASE_CXXFLAGS) -I$(LIBDIR) -D$(AXIS_DEFINE)

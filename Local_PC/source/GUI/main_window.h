@@ -39,7 +39,10 @@ private:
     void startUsbCamera();
     void stopUsbCamera();
     void updateCameraFrame();
+    void showLampInfoDialog();
+    void showErrorCodeDialog();
     void triggerPythonLineMap();
+    void triggerPythonXyzMap();
 
     AxisController controller_;
 
@@ -65,6 +68,10 @@ private:
     QPushButton* btnStop_ = nullptr;
     QPushButton* btnClear_ = nullptr;
     QPushButton* btnDone_ = nullptr;
+    QPushButton* btnConvert_ = nullptr;
+    QPushButton* btnLampInfo_ = nullptr;
+    QPushButton* btnErrorCode_ = nullptr;
+    QPushButton* btnAlarmReset_ = nullptr;
     QPushButton* btnCamStart_ = nullptr;
     QPushButton* btnCamStop_ = nullptr;
     QLineEdit* filePathEdit_;

@@ -49,7 +49,7 @@ LOCAL_SRC := source/tc_6axis.cpp \
              source/DriverConnection.cpp
 
 RPI_SRC   := source/tc.cpp \
-             source/DriverConnection.cpp
+             source/DriverConnection.cpp  
 
 GUI_SRC   := source/GUI/tc_6axis_gui.cpp \
              source/GUI/app_config.cpp \
@@ -58,7 +58,7 @@ GUI_SRC   := source/GUI/tc_6axis_gui.cpp \
              source/GUI/usb_camera.cpp \
              source/GUI/weld_detector.cpp \
              source/DriverConnection.cpp \
-             source/axis_controller_lookahead.cpp
+             source/axis_controller_lookahead_relay_copy.cpp
 
 # ====== Tool Defaults ======
 CROSS_COMPILE ?= aarch64-linux-gnu-

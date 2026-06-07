@@ -46,6 +46,7 @@ public:
     void initializeSystem();
     bool servoOn();
     bool servoOff();
+    bool alarmReset();
     bool home();
     void record();
     bool savePos();

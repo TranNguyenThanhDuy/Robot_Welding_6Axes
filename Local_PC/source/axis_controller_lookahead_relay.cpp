@@ -525,6 +525,33 @@ bool AxisController::servoOff()
     return allOk;
 }
 
+bool AxisController::alarmReset()
+{
+    bool allOk = true;
+    for (size_t i = 0; i < AXIS_COUNT; ++i)
+    {
+        const int ret = FAS_ServoAlarmReset(nPortIDs_[i], iSlaveNos_[i]);
+        if (ret != FMM_OK)
+        {
+            allOk = false;
+            std::cout << axisName(i) << " alarm reset failed. Return code: "
+                      << ret << std::endl;
+        }
+        else
+        {
+            std::cout << axisName(i) << " alarm reset command sent." << std::endl;
+        }
+        std::this_thread::sleep_for(kCommandSpacing);
+    }
+
+    if (allOk)
+    {
+        std::cout << "All " << AXIS_COUNT << " alarm reset commands sent successfully."
+                  << std::endl;
+    }
+    return allOk;
+}
+
 AxisVectorsEx compressBuffer(
     const AxisVectorsEx &in,
     int posEps,

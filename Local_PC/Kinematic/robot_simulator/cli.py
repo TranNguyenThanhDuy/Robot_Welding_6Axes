@@ -499,6 +499,53 @@ def run_line_mapping_cli(file_path):
     return 0
 
 
+def run_xyz_mapping_cli(
+    xyz_file_path,
+    reference_pulses_path,
+    mapped_pulses_output_path="",
+    mapped_angles_output_path="",
+    mapped_xyz_output_path="",
+):
+    if not xyz_file_path:
+        print("Missing xyz-map input file path.")
+        return 1
+    if not os.path.isfile(xyz_file_path):
+        print(f"XYZ input file not found: {xyz_file_path}")
+        return 1
+    if not reference_pulses_path:
+        print("Missing xyz-map reference pulse file path.")
+        return 1
+    if not os.path.isfile(reference_pulses_path):
+        print(f"Reference pulse file not found: {reference_pulses_path}")
+        return 1
+
+    try:
+        reference_pulses = load_encoder_pulses_from_txt(reference_pulses_path)
+        reference_angles = encoder_pulses_to_angles(reference_pulses)
+        mapping = export_line_mapping_from_xyz_file(
+            xyz_file_path,
+            reference_angles=reference_angles,
+            mapped_pulses_output_path=mapped_pulses_output_path or None,
+            mapped_angles_output_path=mapped_angles_output_path or None,
+            mapped_xyz_output_path=mapped_xyz_output_path or None,
+            num_samples_per_segment=1,
+        )
+    except Exception as exc:
+        print(f"XYZ mapping failed: {exc}")
+        return 1
+
+    print("XYZ mapping completed.")
+    print(f"XYZ input: {xyz_file_path}")
+    print(f"Reference pulses: {reference_pulses_path}")
+    print(f"Mapped pulses: {mapping['mapped_pulses_output_path']}")
+    print(f"Mapped angles: {mapping['mapped_angles_output_path']}")
+    print(f"Mapped XYZ actual: {mapping['mapped_xyz_output_path']}")
+    preview_paths = export_line_preview_images(xyz_file_path)
+    print(f"Preview OXY: {preview_paths['oxy']}")
+    print(f"Preview OXZ: {preview_paths['oxz']}")
+    return 0
+
+
 def run_circle_mapping_cli(file_path):
     if not file_path:
         print("Missing circle pose input file path.")
@@ -553,6 +600,14 @@ def main(argv=None):
         return 0
     if argv and argv[0] == "line-map":
         return run_line_mapping_cli(argv[1] if len(argv) > 1 else "")
+    if argv and argv[0] == "xyz-map":
+        return run_xyz_mapping_cli(
+            argv[1] if len(argv) > 1 else "",
+            argv[2] if len(argv) > 2 else "",
+            argv[3] if len(argv) > 3 else "",
+            argv[4] if len(argv) > 4 else "",
+            argv[5] if len(argv) > 5 else "",
+        )
     if argv and argv[0] == "circle-map":
         return run_circle_mapping_cli(argv[1] if len(argv) > 1 else "")
     if argv and argv[0] == "workspace":

@@ -20,8 +20,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVBoxLayout>
-
-#include <QLineEdit>//để điền link
+#include <QLineEdit>
 
 #include <opencv2/core/mat.hpp>
 
@@ -43,7 +42,6 @@ QString resolveModelPath(const AppConfig& config) {
             return modelFile.absoluteFilePath();
         }
     }
-
     return QString();
 }
 
@@ -75,7 +73,6 @@ QString resolveLineMappedPath(const AppConfig& config) {
             return mappedFiles.front().absoluteFilePath();
         }
     }
-
     return QString();
 }
 
@@ -101,7 +98,6 @@ QString resolveLinePreviewPath(const AppConfig& config, const QString& suffix) {
             return previewFiles.front().absoluteFilePath();
         }
     }
-
     return QString();
 }
 
@@ -122,15 +118,18 @@ void setupPreviewLabel(QLabel* label, const QString& text) {
 MainWindow::MainWindow(QWidget* parent) : QWidget(parent), config_(loadAppConfig()) {
     buildUi();
 
-    coutRedirect_ = std::make_unique<StreamRedirect>(log_, std::cout);
-    cerrRedirect_ = std::make_unique<StreamRedirect>(log_, std::cerr);
+    // KHÓA 2 DÒNG NÀY LẠI ĐỂ HIỂN THỊ LOG RA TERMINAL ĐEN KHI DEBUG UART
+    // coutRedirect_ = std::make_unique<StreamRedirect>(log_, std::cout);
+    // cerrRedirect_ = std::make_unique<StreamRedirect>(log_, std::cerr);
 
     logLine("Loaded path config: " + config_.configPath);
     controller_.initializeSystem();
     connectSignals();
+    startUsbSerial();
 }
 
 MainWindow::~MainWindow() {
+    stopUsbSerial();
     stopUsbCamera();
 }
 
@@ -229,14 +228,8 @@ void MainWindow::buildUi() {
     btnClear_ = new QPushButton("Clear");
     btnDone_ = new QPushButton("Done");
     const std::vector<QPushButton*> motionButtons = {
-        btnMove_,
-        btnGo_,
-        btnModeToggle_,
-        btnRecord_,
-        btnSavePos_,
-        btnStop_,
-        btnClear_,
-        btnDone_,
+        btnMove_, btnGo_, btnModeToggle_, btnRecord_,
+        btnSavePos_, btnStop_, btnClear_, btnDone_,
     };
     auto* motionButtonGrid = new QGridLayout();
     motionButtonGrid->setHorizontalSpacing(8);
@@ -258,11 +251,7 @@ void MainWindow::buildUi() {
     btnSetPos_ = new QPushButton("SetPos (Zero)");
     btnGetPos_ = new QPushButton("GetPos");
     const std::vector<QPushButton*> controlButtons = {
-        btnOn_,
-        btnOff_,
-        btnHome_,
-        btnSetPos_,
-        btnGetPos_,
+        btnOn_, btnOff_, btnHome_, btnSetPos_, btnGetPos_,
     };
     for (QPushButton* button : controlButtons) {
         button->setFixedSize(150, 30);
@@ -398,14 +387,12 @@ void MainWindow::connectSignals() {
         else if (controller_.isFileMode()) {
             controller_.setModeSave();
             btnModeToggle_->setText("Mode: MANUAL SAVE");
-
         } 
         else {
             controller_.setModeFile();
             btnModeToggle_->setText("Mode: File");
             refreshFileModePath();
         }
-
     });
     QObject::connect(btnGo_, &QPushButton::clicked, [&]() {
         applyBaseVelocity();
@@ -432,6 +419,223 @@ void MainWindow::connectSignals() {
                      [&]() { controller_.clear(); });
     QObject::connect(btnDone_, &QPushButton::clicked,
                      [&]() { triggerPythonLineMap(); });
+}
+
+void MainWindow::startUsbSerial() {
+    std::cerr << "[MainWindow] startUsbSerial() called\n" << std::flush;
+    logLine("[DEBUG] startUsbSerial() entry point");
+    
+    if (usbSerial_.isRunning()) {
+        logLine("[DEBUG] USB serial already running, skipping");
+        return;
+    }
+
+    // ÉP CỨNG CỔNG ttyUSB1 VÀ TỐC ĐỘ 115200 ĐỂ BỎ QUA FILE CẤU HÌNH LỖI
+    QString targetDevice = "/dev/ttyUSB1"; 
+    int targetBaudRate = 115200;
+
+    logLine(QString("[DEBUG] Attempting to open port: %1 @ %2").arg(targetDevice).arg(targetBaudRate));
+    
+    // Sửa biến truyền vào thành targetDevice và targetBaudRate
+    if (!usbSerial_.openPort(targetDevice.toStdString(), targetBaudRate)) {
+        QString errMsg = QString("Failed to open USB serial port %1: %2")
+                    .arg(targetDevice)
+                    .arg(QString::fromStdString(usbSerial_.lastError()));
+        std::cerr << "[ERROR] " << errMsg.toStdString() << "\n" << std::flush;
+        logLine(errMsg);
+        return;
+    }
+
+    logLine("[DEBUG] Port opened successfully, starting reader thread");
+    usbSerial_.start([this](const std::string& line) {
+        onUsbSerialMessage(line);
+    });
+    logLine(QString("USB serial listener started on %1 @ %2").arg(targetDevice).arg(targetBaudRate));
+    std::cerr << "[DEBUG] USB serial listener started\n" << std::flush;
+}
+
+void MainWindow::onUsbSerialMessage(const std::string& message) {
+    const QString qmsg = QString::fromStdString(message).simplified().toLower();
+    logLine("DEBUG: onUsbSerialMessage called with raw: [" + QString::fromStdString(message) + "]");
+    logLine("DEBUG: processed message: [" + qmsg + "]");
+    
+    if (!qmsg.isEmpty()) {
+        QMetaObject::invokeMethod(this, [this, qmsg]() {
+            processUsbMessage(qmsg);
+        }, Qt::QueuedConnection);
+    } else {
+        logLine("DEBUG: Message is empty after processing, skipping");
+    }
+}
+
+void MainWindow::stopUsbSerial() {
+    logLine("Stopping USB serial listener...");
+    if (usbSerial_.isRunning()) {
+        usbSerial_.stop();
+    }
+    if (usbSerial_.isOpen()) {
+        usbSerial_.closePort();
+    }
+    logLine("USB serial listener stopped.");
+}
+
+void MainWindow::processUsbMessage(const QString& message) {
+    // ÉP LÀM SẠCH CHUỖI TUYỆT ĐỐI (DỌN RÁC UART TỪ PHẦN CỨNG HOẶC DRIVER WSL)
+    const QString cmd = message.trimmed().simplified().toLower();
+    if (cmd.isEmpty()) {
+        return;
+    }
+
+    // Bắt buộc in trực tiếp ra std::cout để thấy luồng nhảy vào xử lý GUI
+    std::cout << "[MAIN WINDOW] Thuc thi lenh tu UART: " << cmd.toStdString() << std::endl;
+    logLine("USB command processing: " + cmd);
+
+    if (cmd == QLatin1String("on") || cmd == QLatin1String("servo on") || cmd == QLatin1String("servoon")) {
+        applyBaseVelocity();
+        controller_.servoOn();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: SERVO ON");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("off") || cmd == QLatin1String("servo off") || cmd == QLatin1String("servooff")) {
+        applyBaseVelocity();
+        controller_.servoOff();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: SERVO OFF");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("home")) {
+        applyBaseVelocity();
+        controller_.home();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: HOME");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("setpos") || cmd == QLatin1String("set pos") || cmd == QLatin1String("zero") || cmd == QLatin1String("setpos zero")) {
+        applyBaseVelocity();
+        controller_.setOriginPos();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: SETPOS");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("getpos") || cmd == QLatin1String("get pos")) {
+        btnGetPos_->click();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: GETPOS");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("move") || cmd == QLatin1String("move pos") || cmd == QLatin1String("movepos")) {
+        applyBaseVelocity();
+        AxisPositions targets{};
+        for (size_t i = 0; i < AXIS_COUNT; ++i) {
+            targets[i] = axisInputs_[i]->value();
+        }
+        controller_.movePos(targets);
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: MOVE POS");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("go") || cmd == QLatin1String("go beside") || cmd == QLatin1String("gobeside") || cmd == QLatin1String("goside") || cmd == QLatin1String("go recorded") || cmd == QLatin1String("go (recorded)")) {
+        applyBaseVelocity();
+        if (controller_.isFileMode()) {
+            refreshFileModePath();
+        }
+        controller_.go();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: GO");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("record") || cmd == QLatin1String("start record") || cmd == QLatin1String("record start")) {
+        btnRecord_->click();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: RECORD");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("savepos") || cmd == QLatin1String("save pos")) {
+        btnSavePos_->click();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: SAVE POS");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("stop")) {
+        controller_.stop();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: STOP");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("clear")) {
+        controller_.clear();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: CLEAR");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("done") || cmd == QLatin1String("finish")) {
+        triggerPythonLineMap();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: DONE");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("mode") || cmd == QLatin1String("mode toggle") || cmd == QLatin1String("toggle mode")) {
+        btnModeToggle_->click();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: MODE TOGGLE");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("mode auto") || cmd == QLatin1String("mode auto record") || cmd == QLatin1String("auto mode") || cmd == QLatin1String("auto record")) {
+        controller_.setModeRecord();
+        btnModeToggle_->setText("Mode: AUTO RECORD");
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: MODE AUTO RECORD");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("mode save") || cmd == QLatin1String("mode manual") || cmd == QLatin1String("manual save") || cmd == QLatin1String("save mode")) {
+        controller_.setModeSave();
+        btnModeToggle_->setText("Mode: MANUAL SAVE");
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: MODE MANUAL SAVE");
+        }
+        return;
+    }
+
+    if (cmd == QLatin1String("mode file") || cmd == QLatin1String("file mode")) {
+        controller_.setModeFile();
+        btnModeToggle_->setText("Mode: File");
+        refreshFileModePath();
+        if (pointLog_) {
+            pointLog_->appendPlainText("USB command executed: MODE FILE");
+        }
+        return;
+    }
+
+    logLine("Unknown USB command: " + cmd);
 }
 
 void MainWindow::logLine(const QString& text) {
@@ -528,7 +732,6 @@ void MainWindow::refreshLineMapPreviews() {
             label->setText("Cannot load preview image");
             return;
         }
-
         label->setPixmap(pixmap.scaled(label->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
     };
 
@@ -753,17 +956,12 @@ void MainWindow::triggerPythonLineMap() {
     }
 }
 
-QString MainWindow::convertPathToLinux(const QString& path)
-{
+QString MainWindow::convertPathToLinux(const QString& path) {
     QString p = path;
-
     p.replace("\\", "/");
-
-    if (p.length() > 2 && p[1] == ':')
-    {
+    if (p.length() > 2 && p[1] == ':') {
         QChar drive = p[0].toLower();
         p = "/mnt/" + QString(drive) + p.mid(2);
     }
-
     return p;
 }

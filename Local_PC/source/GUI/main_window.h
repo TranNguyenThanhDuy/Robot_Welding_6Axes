@@ -3,10 +3,12 @@
 #include "app_config.h"
 #include "axis_controller.h"
 #include "gui_log_redirect.h"
+#include "serial_controller.h"
 #include "usb_camera.h"
 #include "weld_detector.h"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <QWidget>
@@ -38,10 +40,15 @@ private:
     void refreshFileModePath();
     void startUsbCamera();
     void stopUsbCamera();
+    void startUsbSerial();
+    void stopUsbSerial();
+    void onUsbSerialMessage(const std::string& message);
+    void processUsbMessage(const QString& message);
     void updateCameraFrame();
     void triggerPythonLineMap();
 
     AxisController controller_;
+    SerialController usbSerial_;
 
     QPlainTextEdit* log_ = nullptr;
     QLabel* cameraPreview_ = nullptr;

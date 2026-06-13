@@ -5,6 +5,8 @@
 struct AppConfig {
     QString configPath;
     QString usbCameraDevice = "/dev/video0";
+    QString usbSerialDevice = "/dev/ttyUSB0";
+    int usbSerialBaudRate = 115200;
     QString modelPath = "AI_predict/best.onnx";
     QString pythonExecutable = "python3";
     QString pythonMainPath = "./Kinematic/main.py";

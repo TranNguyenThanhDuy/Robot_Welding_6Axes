@@ -1,0 +1,81 @@
+[Gọi AxisController()] 
+       │
+       ▼
+Nạp giá trị mặc định (Cổng, ID Slave, Tỷ số truyền từng trục)
+       │
+       ▼
+[Gọi initializeSystem()]
+       │
+       ▼
+Gọi Driver_Connection() thiết lập kết nối UART (ttyUSB0, Baudrate 115200) cho từng trục
+       │
+       ▼
+[Gọi servoOn()] ──► Kích hoạt dòng giữ cho toàn bộ Motor qua hàm ServoOn()
+
+Luồng Vận hành Quỹ đạo chính: Hàm go()
+
+┌─────────────────── khôi phục chế độ ───────────────────┐
+                   │                                                        │
+              [Gọi go()]                                                    │
+                   │                                                        │
+         Kiểm tra capture_mode_                                             │
+                   │                                                        │
+    ┌──────────────┼─────────────────────────────┐                          │
+    ▼              ▼                             ▼                          ▼
+[FileMode]   [ManualSave]                  [AutoRecord]              [Xử lý Lookahead]
+    │              │                             │                          │
+Đọc file .txt  Lấy tọa độ từ                 Lấy tọa độ từ                  │
+Nạp header     saved_positions_              recorded_positions_            │
+    │              │                             │                          │
+    └──────────────┴──────────────┬──────────────┘                          │
+                                  ▼                                         │
+                        [Gọi goWithBuffer()]                                │
+                                  │                                         │
+           Kiểm tra an toàn: Đọc trạng thái Servo (allServoOn)               │
+                                  │                                         │
+           Ghi nhớ cấu hình Accel/Decel gốc từ Driver ──────────────────────┘
+                                  │
+                                  ▼
+           Cài đặt thời gian phản hồi Accel/Decel siêu ngắn (5ms) để chạy Realtime
+                                  │
+                                  ▼
+           VÒNG LẶP DUYỆT TỪNG ĐIỂM (i -> steps)
+                   │
+                   ├──► Kiểm tra IO trạng thái Rơ-le (Bật/Tắt Mỏ hàn nếu có thay đổi)
+                   ├──► Tính toán tích vô hướng góc cua (cornerSpeedScale)
+                   ├──► Tính toán vận tốc đồng tốc cho các trục (computeSegmentVelocities)
+                   │
+                   ├──► [Gửi lệnh xuống phần cứng]:
+                   │      - Nếu trục chưa Stream: Gọi FAS_MoveSingleAxisAbsPos()
+                   │      - Nếu đang Stream: Gọi Override Vận tốc & Vị trí liên tục
+                   │
+                   └──► Sleep_until() chờ cho hết khung thời gian phân đoạn (Segment Period)
+                                  │
+                                  ▼
+           [waitForMotionComplete()] Giám sát bit MOTIONING cho tới khi toàn bộ robot dừng hẳn
+                                  │
+                                  ▼
+           Khôi phục lại thông số Accel/Decel mặc định của Driver -> Kết thúc.
+
+
+. Luồng Ghi dữ liệu thời gian thực (Recording Thread)
+
+[Luồng chính gọi record()] ──► Xóa sạch bộ đệm cũ ──► Khởi chạy luồng ẩn recordingThread()
+                                                               │
+   ┌───────────────────────────────────────────────────────────┘
+   ▼
+VÒNG LẶP (Chạy liên tục mỗi 10ms khi flag recording_ = true)
+   │
+   ├──► Đọc vị trí thực (readActualPositions) & Tín hiệu IO cảm biến
+   │
+   ├──► Tính Delta vị trí so với chu kỳ trước -> Tính Vận tốc PPS (Pulses Per Second)
+   │
+   ├──► Tính tốc độ vòng/phút dựa trên tỷ số truyền phần cứng:
+   │    $$RPM_{Motor} = \frac{PPS}{PPR} \times 60$$
+   │    $$RPM_{Output} = \frac{RPM_{Motor}}{GearRatio}$$
+   │
+   ├──► Cứ mỗi 500ms (50 mẫu), định dạng chuỗi xuất ra Console sử dụng `std::setprecision(2)`
+   │
+   ├──► Lock mutex (`rec_mtx_`) -> Đẩy dữ liệu vào mảng `recorded_positions_` & `recorded_velocities_`
+   │
+   └──► Đợi 10ms (std::this_thread::sleep_for) rồi lặp lại.

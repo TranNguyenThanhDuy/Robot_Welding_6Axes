@@ -39,6 +39,10 @@ AppConfig loadAppConfig(const QString& configPath) {
 
     config.usbCameraDevice =
         settings.value("usb_camera_device", config.usbCameraDevice).toString();
+    config.usbSerialDevice =
+        settings.value("usb_serial_device", config.usbSerialDevice).toString();
+    config.usbSerialBaudRate =
+        settings.value("usb_serial_baud_rate", config.usbSerialBaudRate).toInt();
     config.modelPath =
         settings.value("model_path", config.modelPath).toString();
     config.pythonExecutable =

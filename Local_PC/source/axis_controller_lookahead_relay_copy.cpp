@@ -22,7 +22,6 @@ constexpr double kMinCornerSpeedScale = 0.25;
 constexpr double kStraightCosThreshold = 0.98;
 constexpr size_t DI_INDEX = 0;
 constexpr size_t DO_INDEX = 0;
-constexpr size_t FILE_RELAY_COLUMN = 6;
 constexpr auto kRelaySettleDelay = std::chrono::milliseconds(500);
 constexpr auto kMotionPollInterval = std::chrono::milliseconds(10);
 constexpr auto kHomingTimeout = std::chrono::seconds(45);
@@ -1091,8 +1090,8 @@ bool AxisController::goFromFile(const std::string& filename)
         
         // Lưu vào mảng 1 chiều chứa các dòng
         int relayState = 0;
-        if (row.size() > FILE_RELAY_COLUMN) {
-            relayState = row[FILE_RELAY_COLUMN];
+        if (row.size() > AXIS_COUNT) {
+            relayState = row.back();
         }
         relayBuffer.push_back(relayState);
         pathBuffer.push_back(pos);
@@ -1336,6 +1335,12 @@ bool AxisController::goPos() {
 }
 
 bool AxisController::savePos() {
+    bool inputSignal = false;
+    readInputSignal(inputSignal);
+    return savePos(inputSignal);
+}
+
+bool AxisController::savePos(bool relayState) {
     if (!isSaveMode()) {
         std::cout << "Current mode is AUTO RECORD. Switch mode to MANUAL SAVE first."
                   << std::endl;
@@ -1347,14 +1352,11 @@ bool AxisController::savePos() {
         return false;
     }
 
-    bool inputSignal = false;
-    readInputSignal(inputSignal);
-
     std::lock_guard<std::mutex> lk(rec_mtx_);
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         saved_positions_[i].push_back(pos[i]);
     }
-    g_savedRelayStates.push_back(inputSignal ? 1 : 0);
+    g_savedRelayStates.push_back(relayState ? 1 : 0);
 
     std::cout << "Saved current position to manual buffer. Total manual points: "
               << saved_positions_[0].size() << std::endl;
@@ -1378,7 +1380,7 @@ bool AxisController::savePos() {
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         temp[i].resize(1);
     }
-    temp[AXIS_COUNT].push_back(inputSignal ? 1 : 0);
+    temp[AXIS_COUNT].push_back(relayState ? 1 : 0);
 
     if (writeBufferToFile("savePos.txt", temp, true)) {
         std::cout << "Saved to savePos.txt" << std::endl;

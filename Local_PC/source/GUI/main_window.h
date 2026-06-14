@@ -64,6 +64,7 @@ private:
     QPushButton* btnGo_ = nullptr;
     QPushButton* btnModeToggle_ = nullptr;
     QPushButton* btnRecord_ = nullptr;
+    QPushButton* btnRelayState_ = nullptr;
     QPushButton* btnSavePos_ = nullptr;
     QPushButton* btnStop_ = nullptr;
     QPushButton* btnClear_ = nullptr;

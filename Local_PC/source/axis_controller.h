@@ -50,6 +50,7 @@ public:
     bool home();
     void record();
     bool savePos();
+    bool savePos(bool relayState);
     void setModeRecord();
     void setModeSave();
     bool isFileMode() const;

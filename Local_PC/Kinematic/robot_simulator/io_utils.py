@@ -13,20 +13,40 @@ def load_encoder_pulses_from_txt(file_path):
     return pulse_sets[0].copy()
 
 
-def load_encoder_pulse_sets_from_txt(file_path):
+def load_encoder_pulse_sets_with_relay_from_txt(file_path):
     pulse_sets = []
+    relay_states = []
+    has_relay = False
+
     with open(file_path, "r", encoding="utf-8") as file:
         for line_number, raw_line in enumerate(file, start=1):
             line = raw_line.strip()
             if not line:
                 continue
             numbers = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", line)
-            if len(numbers) != 6:
-                raise ValueError(f"Line {line_number} must contain exactly 6 numeric pulse values.")
-            pulse_sets.append([float(value) for value in numbers])
+            if len(numbers) not in (6, 7):
+                raise ValueError(
+                    f"Line {line_number} must contain 6 pulse values"
+                    " plus an optional relay state."
+                )
+            pulse_sets.append([float(value) for value in numbers[:6]])
+            if len(numbers) == 7:
+                has_relay = True
+                relay_states.append(1 if float(numbers[6]) != 0.0 else 0)
+            else:
+                relay_states.append(0)
+
     if not pulse_sets:
         raise ValueError("The txt file does not contain any valid pulse sets.")
-    return np.array(pulse_sets, dtype=float)
+
+    pulses = np.array(pulse_sets, dtype=float)
+    relays = np.array(relay_states, dtype=int) if has_relay else None
+    return pulses, relays
+
+
+def load_encoder_pulse_sets_from_txt(file_path):
+    pulse_sets, _ = load_encoder_pulse_sets_with_relay_from_txt(file_path)
+    return pulse_sets
 
 
 def load_xyz_waypoints_from_txt(file_path):
@@ -59,9 +79,9 @@ def forward_kinematics_from_encoder_file(file_path, ppr=ENCODER_PPR, gearbox_rat
 
 
 def forward_kinematics_from_encoder_file_all(file_path, ppr=ENCODER_PPR, gearbox_ratios=None):
-    pulse_sets = load_encoder_pulse_sets_from_txt(file_path)
+    pulse_sets, relay_states = load_encoder_pulse_sets_with_relay_from_txt(file_path)
     results = []
-    for pulses in pulse_sets:
+    for idx, pulses in enumerate(pulse_sets):
         angles = encoder_pulses_to_angles(pulses, ppr=ppr, gearbox_ratios=gearbox_ratios)
         T06 = Forward_Kinematics(angles[0], angles[1] + THETA2_OFFSET, angles[2], angles[3], angles[4], angles[5])
         results.append(
@@ -71,6 +91,7 @@ def forward_kinematics_from_encoder_file_all(file_path, ppr=ENCODER_PPR, gearbox
                 "transform": T06,
                 "position": T06[:3, 3].copy(),
                 "rotation": T06[:3, :3].copy(),
+                "relay": None if relay_states is None else int(relay_states[idx]),
             }
         )
     return results
@@ -95,13 +116,20 @@ def export_angle_sets_to_txt(source_file_path, output_file_path=None, ppr=ENCODE
     return output_file_path, np.array(angle_sets, dtype=float)
 
 
-def export_mapped_pulses_to_txt(mapped_pulses, output_file_path):
+def export_mapped_pulses_to_txt(mapped_pulses, output_file_path, relay_states=None):
     mapped_pulses = np.rint(np.array(mapped_pulses, dtype=float)).astype(int)
     if mapped_pulses.ndim != 2 or mapped_pulses.shape[1] != 6:
         raise ValueError("Expected mapped pulses with shape (N, 6).")
+    if relay_states is not None:
+        relay_states = np.array(relay_states, dtype=int).flatten()
+        if relay_states.size != mapped_pulses.shape[0]:
+            raise ValueError("Expected one relay state per mapped pulse row.")
     with open(output_file_path, "w", encoding="utf-8") as file:
-        for pulse_set in mapped_pulses:
-            file.write(" ".join(str(int(value)) for value in pulse_set) + "\n")
+        for idx, pulse_set in enumerate(mapped_pulses):
+            values = [str(int(value)) for value in pulse_set]
+            if relay_states is not None:
+                values.append(str(1 if int(relay_states[idx]) != 0 else 0))
+            file.write(" ".join(values) + "\n")
     return output_file_path
 
 

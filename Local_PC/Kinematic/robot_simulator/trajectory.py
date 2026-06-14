@@ -188,6 +188,44 @@ generate_polyline_samples = generate_polyline_position_samples
 generate_polyline_targets = generate_polyline_position_rotation_targets
 
 
+def build_relay_mapped_pulses(mapped_pulses, relay_states, waypoint_indices):
+    mapped_pulses = np.rint(np.array(mapped_pulses, dtype=float)).astype(int)
+    relay_states = np.array(relay_states, dtype=int).flatten()
+    waypoint_indices = np.array(waypoint_indices, dtype=int).flatten()
+
+    if mapped_pulses.ndim != 2 or mapped_pulses.shape[1] != 6:
+        raise ValueError("Expected mapped pulses with shape (N, 6).")
+    if relay_states.size != waypoint_indices.size:
+        raise ValueError("Expected one relay state per source waypoint.")
+    if waypoint_indices.size < 1:
+        raise ValueError("Expected at least one waypoint index.")
+
+    output_pulses = [mapped_pulses[0].copy()]
+    output_relays = [1 if relay_states[0] != 0 else 0]
+
+    for segment_idx in range(waypoint_indices.size - 1):
+        start_idx = int(waypoint_indices[segment_idx])
+        end_idx = int(waypoint_indices[segment_idx + 1])
+        current_state = 1 if relay_states[segment_idx] != 0 else 0
+        next_state = 1 if relay_states[segment_idx + 1] != 0 else 0
+
+        segment_state = current_state
+        if current_state == 1 and next_state == 0:
+            output_pulses.append(mapped_pulses[start_idx].copy())
+            output_relays.append(0)
+            segment_state = 0
+
+        for mapped_idx in range(start_idx + 1, end_idx + 1):
+            output_pulses.append(mapped_pulses[mapped_idx].copy())
+            output_relays.append(segment_state)
+
+        if current_state == 0 and next_state == 1:
+            output_pulses.append(mapped_pulses[end_idx].copy())
+            output_relays.append(1)
+
+    return np.array(output_pulses, dtype=int), np.array(output_relays, dtype=int)
+
+
 def generate_segment_start_rotation_targets(rotations, num_samples_per_segment=LINE_MAPPING_SAMPLES_PER_SEGMENT):
     rotation_array = np.array(rotations, dtype=float)
     if rotation_array.ndim != 3 or rotation_array.shape[1:] != (3, 3):
@@ -295,6 +333,9 @@ def build_line_mapping_from_encoder_file(
         raise ValueError("Line mapping requires at least 2 pulse sets.")
 
     raw_pulses = np.array([item["pulses"] for item in raw_results], dtype=float)
+    raw_relay_states = None
+    if any(item.get("relay") is not None for item in raw_results):
+        raw_relay_states = np.array([0 if item.get("relay") is None else item["relay"] for item in raw_results], dtype=int)
     raw_angles = np.array([item["angles"] for item in raw_results], dtype=float)
     raw_angles_ik = convert_display_angles_to_ik_angles(raw_angles)
     raw_positions = np.array([item["position"] for item in raw_results], dtype=float)
@@ -376,6 +417,7 @@ def build_line_mapping_from_encoder_file(
 
     return {
         "raw_pulses": raw_pulses,
+        "raw_relay_states": raw_relay_states,
         "raw_angles": raw_angles,
         "raw_positions": raw_positions,
         "raw_rotations": raw_rotations,
@@ -421,7 +463,17 @@ def export_line_mapping_from_encoder_file(
 
     if mapped_pulses_output_path is None:
         mapped_pulses_output_path = os.path.join(LINE_MAPPING_OUTPUT_DIR, f"{base_name}_line_mapped{ext}")
-    export_mapped_pulses_to_txt(mapping["mapped_pulses"], mapped_pulses_output_path)
+    if mapping["raw_relay_states"] is None:
+        export_mapped_pulses_to_txt(mapping["mapped_pulses"], mapped_pulses_output_path)
+    else:
+        relay_mapped_pulses, mapped_relay_states = build_relay_mapped_pulses(
+            mapping["mapped_pulses"],
+            mapping["raw_relay_states"],
+            mapping["waypoint_indices"],
+        )
+        mapping["relay_mapped_pulses"] = relay_mapped_pulses
+        mapping["mapped_relay_states"] = mapped_relay_states
+        export_mapped_pulses_to_txt(relay_mapped_pulses, mapped_pulses_output_path, mapped_relay_states)
 
     if mapped_angles_output_path is None:
         mapped_angles_output_path = os.path.join(LINE_MAPPING_OUTPUT_DIR, f"{base_name}_line_angles{ext}")

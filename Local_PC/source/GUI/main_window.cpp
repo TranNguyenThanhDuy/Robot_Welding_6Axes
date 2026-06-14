@@ -298,6 +298,9 @@ void MainWindow::buildUi() {
     btnModeToggle_ = new QPushButton("Mode: AUTO RECORD");
     btnModeToggle_->setCheckable(true);
     btnRecord_ = new QPushButton("Record");
+    btnRelayState_ = new QPushButton("Relay: OFF");
+    btnRelayState_->setCheckable(true);
+    btnRelayState_->setFixedSize(150, 30);
     btnSavePos_ = new QPushButton("Save Pos");
     btnStop_ = new QPushButton("Stop");
     btnClear_ = new QPushButton("Clear");
@@ -317,6 +320,16 @@ void MainWindow::buildUi() {
     auto* motionButtonGrid = new QGridLayout();
     motionButtonGrid->setHorizontalSpacing(8);
     motionButtonGrid->setVerticalSpacing(8);
+
+    auto* relayRow = new QHBoxLayout();
+    auto* relayLabel = new QLabel("Relay State");
+    relayLabel->setFixedWidth(70);
+    relayRow->setSpacing(4);
+    relayRow->addWidget(relayLabel);
+    relayRow->addWidget(btnRelayState_);
+    relayRow->addStretch();
+    motionColumn->addLayout(relayRow);
+
     for (size_t i = 0; i < motionButtons.size(); ++i) {
         QPushButton* button = motionButtons[i];
         button->setFixedSize(150, 30);
@@ -399,6 +412,17 @@ void MainWindow::buildUi() {
     QFont pointLogFont = pointLog_->font();
     pointLogFont.setFamily("monospace");
     pointLog_->setFont(pointLogFont);
+    pointLog_->setPlainText(QStringList{
+        "SavePos | Motor 1=-    ./genMotor 2=-51  Motor 3=-705  Motor 4=-54  Motor 5=-111356  Motor 6=-5165",
+        "SavePos | Motor 1=-10  Motor 2=-28799  Motor 3=-26  Motor 4=140  Motor 5=-109955  Motor 6=-5181",
+        "SavePos | Motor 1=-17177  Motor 2=-30902  Motor 3=-302  Motor 4=156  Motor 5=-109688  Motor 6=-5543",
+        "SavePos | Motor 1=-17180  Motor 2=15915  Motor 3=-1345  Motor 4=433  Motor 5=-109686  Motor 6=-4915",
+        "SavePos | Motor 1=-13945  Motor 2=-25050  Motor 3=1192  Motor 4=1198  Motor 5=-58146  Motor 6=-350",
+        "SavePos | Motor 1=-13920  Motor 2=-30894  Motor 3=-252  Motor 4=656  Motor 5=-58897  Motor 6=-415",
+        "SavePos | Motor 1=-2720  Motor 2=-30894  Motor 3=-264  Motor 4=1105  Motor 5=-58901  Motor 6=-249",
+        "SavePos | Motor 1=-2730  Motor 2=-30894  Motor 3=1719  Motor 4=-2961  Motor 5=-28460  Motor 6=294",
+        "All Servo On"
+    }.join('\n'));
     pointLogLayout->addWidget(pointLog_);
     root->addWidget(pointLogBox);
 
@@ -500,8 +524,12 @@ void MainWindow::connectSignals() {
             appendPointLog("Record");
         }
     });
+    QObject::connect(btnRelayState_, &QPushButton::toggled, [&](bool checked) {
+        btnRelayState_->setText(checked ? "Relay: ON" : "Relay: OFF");
+    });
     QObject::connect(btnSavePos_, &QPushButton::clicked, [&]() {
-        if (controller_.savePos()) {
+        const bool relayState = btnRelayState_ && btnRelayState_->isChecked();
+        if (controller_.savePos(relayState)) {
             appendPointLog("SavePos");
         }
     });
@@ -659,6 +687,9 @@ void MainWindow::appendPointLog(const QString& action) {
     QStringList parts;
     for (size_t i = 0; i < AXIS_COUNT; ++i) {
         parts << QString::fromStdString(controller_.axisName(i)) + "=" + QString::number(pos[i]);
+    }
+    if (action == QStringLiteral("SavePos") && btnRelayState_) {
+        parts << QStringLiteral("Relay=%1").arg(btnRelayState_->isChecked() ? 1 : 0);
     }
     pointLog_->appendPlainText(QString("%1 | %2").arg(action, parts.join("  ")));
 }
